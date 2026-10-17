@@ -1,4 +1,4 @@
-/* ヨシトモの二人旅ログ — version 2
+/* ヨシトモの二人旅ログ — version 3
  * データはローカル保存。Firebase設定・共有コードを入力すると2人でリアルタイム同期。
  * Google Maps短縮URLの展開には同梱のVercel APIが必要です。
  */
@@ -48,6 +48,9 @@ let pendingInflight = new Set();
 let cloudReady = false;
 let syncSession = 0;
 let lastSyncError = '';
+let routePoints = [];
+let routeRun = 0;
+let routeResolving = false;
 
 const el = id => document.getElementById(id);
 const safeParse = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
@@ -69,7 +72,8 @@ function sanitizePlace(value) {
     rating: Math.max(1, Math.min(5, Math.round(Number(value.rating)||5))),
     comment: String(value.comment ?? '').slice(0,3000),
     color: /^#[0-9a-fA-F]{6}$/.test(value.color ?? '') ? value.color : '#ec4899',
-    radius: Math.max(1, Math.min(5, Math.round(Number(value.radius)||1))),
+    // Keep legacy 3-5km records intact; new records use 0.5/1/2km only.
+    radius: [0.5,1,2,3,4,5].includes(Number(value.radius ?? 1)) ? Number(value.radius ?? 1) : 0.5,
     prefecture: PREFECTURES.includes(value.prefecture) ? value.prefecture : '',
     updatedAt: Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : 0
   };
@@ -117,7 +121,10 @@ function populatePrefectureSelect() {
 }
 function initMap() {
   map = L.map('map',{zoomControl:false}).setView([36.575,137.984],6);
-  L.control.zoom({position:'topleft'}).addTo(map);
+  const zoomControl = L.control.zoom({position:'topleft'}).addTo(map);
+  // Prevent Leaflet controls from bubbling clicks to the map and affecting page UI.
+  L.DomEvent.disableClickPropagation(zoomControl.getContainer());
+  L.DomEvent.disableScrollPropagation(zoomControl.getContainer());
   L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
     maxZoom:18, attribution:'<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>'
   }).addTo(map);
@@ -194,6 +201,28 @@ function renderPrefecturesTracker() {
 function focusOnMap(lat,lng) {map.flyTo([lat,lng],12,{duration:1.2}); closePanel();}
 function togglePanel() {el('sidebar').classList.toggle('translate-x-full');}
 function closePanel() {el('sidebar').classList.add('translate-x-full');}
+const RADIUS_CHOICES = [0.5,1,2];
+function radiusLabel(value) {return value === 0.5 ? '500m' : `${value}km`;}
+function setRadiusSlider(radius) {
+  const slider=el('input-radius');
+  delete slider.dataset.legacyRadius;
+  const value=Number(radius);
+  if (value>2 && value<=5) {
+    // Editing a legacy record must not silently change its larger circle.
+    slider.value='2';
+    slider.dataset.legacyRadius=String(value);
+    el('radius-value-display').textContent=`${radiusLabel(value)} (旧設定)`;
+  } else {
+    const index=RADIUS_CHOICES.indexOf(value);
+    slider.value=String(index<0?0:index);
+    el('radius-value-display').textContent=radiusLabel(RADIUS_CHOICES[index<0?0:index]);
+  }
+}
+function selectedRadius() {
+  const slider=el('input-radius');
+  if(slider.dataset.legacyRadius) return Number(slider.dataset.legacyRadius);
+  return RADIUS_CHOICES[Number(slider.value)] ?? 0.5;
+}
 function openAddModal() {
   editingPlaceId=null;
   el('form-add-place').reset();
@@ -202,7 +231,7 @@ function openAddModal() {
   el('modal-title').textContent='思い出の場所を登録';
   el('btn-submit-place').textContent='マップに登録する';
   el('input-date').value=nowLocalDate();
-  el('radius-value-display').textContent='1 km';
+  setRadiusSlider(0.5);
   el('gmap-status').classList.add('hidden'); el('search-status').classList.add('hidden');
   el('pref-status').textContent='地図タップや位置取得で自動判定します';
   el('modal-add').classList.remove('hidden');
@@ -219,8 +248,7 @@ function openEditPlace(id) {
   el('input-date').value=p.date||'';
   el('input-comment').value=p.comment;
   el('input-color').value=p.color;
-  el('input-radius').value=p.radius;
-  el('radius-value-display').textContent=`${p.radius} km`;
+  setRadiusSlider(p.radius);
   currentRating=p.rating; updateStarRatingUI(p.rating);
   selectedPrefManually=!!p.prefecture;
   if(p.prefecture) el('pref-status').textContent=`登録済み: ${p.prefecture}`;
@@ -311,6 +339,196 @@ async function applyLocation(lat,lng,pref='') {
     await detectPrefecture(lat,lng);
   }
 }
+// Googleマップの経路URLに明示された地点だけを取り出す。地図の中心座標や
+// 経路の描画データを地点と取り違えない（Google側が省略した地点は復元できない）。
+function parseGoogleRouteUrl(url) {
+  const u=new URL(url);
+  if(!/\/maps\/dir(?:\/|$)/i.test(u.pathname)) return null;
+  const notes=[];
+  let names=[];
+  const origin=u.searchParams.get('origin')||u.searchParams.get('saddr');
+  const dest=u.searchParams.get('destination')||u.searchParams.get('daddr');
+  const via=u.searchParams.get('waypoints')||'';
+  if(dest) {
+    if(origin) names.push(origin);
+    else notes.push('出発地がURLにありません（現在地など）。出発地は登録対象に含めていません。');
+    if(via) names.push(...via.split('|').filter(Boolean));
+    names.push(dest);
+  } else {
+    const marker=u.pathname.match(/\/maps\/dir\/?/i);
+    const after=marker ? u.pathname.slice(marker.index+marker[0].length) : '';
+    const raw=after.split('/').filter(Boolean);
+    for(const part of raw) {
+      if(/^@|^data=|^am=|^!|^\?/.test(part)) break;
+      let name;
+      try {name=decodeURIComponent(part.replace(/\+/g,' ')).trim();}
+      catch {name=part.replace(/\+/g,' ').trim();}
+      if(name) names.push(name);
+    }
+    if(!names.length) notes.push('このURLには地点名が含まれていません。Googleマップの「ルートを共有」からコピーし直してください。');
+    // 出発地が空欄で、経路の最初の場所だけ残るケースに注意喚起。
+    if(after.startsWith('/')) notes.push('出発地が省略されている可能性があります。各地点を確認してください。');
+  }
+  const coordsOf=(text)=>{
+    const match=String(text).match(/^\s*(?:loc:)?(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$/i);
+    if(!match)return null;
+    const lat=Number(match[1]),lng=Number(match[2]);
+    return validCoord(lat,lng)?{lat,lng}:null;
+  };
+  const items=names.slice(0,25).map((value,i)=>{
+    const source=String(value).trim().slice(0,200);
+    const coords=coordsOf(source);
+    const dynamic=/^(現在地|現在の場所|自分の現在地|your location|my location|current location)$/i.test(source);
+    return {role:i===0 && origin ? '出発地' : '',source,
+      name:coords ? `${coords.lat}, ${coords.lng}` : source,
+      lat:coords?.lat??null,lng:coords?.lng??null,pref:'',
+      checked:!dynamic, status:dynamic?'error':'pending',
+      message:dynamic?'現在地はURLだけでは特定できません':'', exactCoordinate:!!coords};
+  });
+  // API形式は出発地・経由地・目的地を確定。経路パス形式は左から順に判別。
+  items.forEach((item,i)=>{
+    item.role=i===items.length-1?'目的地':(i===0 && (origin || !dest))?'出発地':`経由地 ${origin?i:i+1}`;
+  });
+  if(names.length>25)notes.push('URL内の地点が多いため、最初の25地点のみ表示しています。');
+  notes.push('Googleマップが共有URLに含めなかった経由地や、道路上の通過点は取り込めません。');
+  return {items,notes};
+}
+function routeHasCoordinates(p) {
+  return typeof p.lat==='number' && typeof p.lng==='number' && validCoord(p.lat,p.lng);
+}
+function routeMapLink(p) {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${p.lat},${p.lng}`)}`;
+}
+function updateRouteRow(i) {
+  const p=routePoints[i]; if(!p)return;
+  const row=el(`route-row-${i}`);if(!row)return;
+  const checkbox=row.querySelector('.route-select');
+  checkbox.checked=!!p.checked;
+  checkbox.disabled=p.status!=='ready';
+  const status=row.querySelector('.route-state');
+  const message=p.status==='ready' ? `${p.pref||'都道府県未判定'} ｜ ${p.exactCoordinate?'URL内の座標':'地名から推定した位置'}` : p.message||'位置を調べています…';
+  status.textContent=message;
+  status.className=`route-state text-[11px] mt-1 ${p.status==='ready'?'text-emerald-700':p.status==='error'?'text-amber-700':'text-slate-500'}`;
+  row.querySelector('.route-retry').disabled=routeResolving;
+  const link=row.querySelector('.route-map-link');
+  link.classList.toggle('hidden',!routeHasCoordinates(p));
+  if(routeHasCoordinates(p))link.href=routeMapLink(p);
+  refreshRouteImportButton();
+}
+function refreshRouteImportButton() {
+  const count=routePoints.filter(p=>p.checked && p.status==='ready' && routeHasCoordinates(p) && p.name.trim()).length;
+  const btn=el('btn-import-route');
+  btn.disabled=routeResolving||count===0;
+  btn.textContent=routeResolving?'地点の位置を確認中…':`選択した${count}件を登録する`;
+}
+function closeRouteModal() {
+  routeRun++;
+  routePoints=[];
+  routeResolving=false;
+  el('modal-route').classList.add('hidden');
+}
+function openRouteModal(route) {
+  routeRun++;
+  routePoints=route.items;
+  routeResolving=true;
+  el('route-note').textContent='※ '+route.notes.join(' ')+ ' 地名から推定した場所は「地図で確認」でご確認ください。';
+  el('route-date').value=el('input-date').value||nowLocalDate();
+  el('route-radius').value=String(Math.min(selectedRadius(),2));
+  el('route-color').value=el('input-color').value||'#ec4899';
+  el('modal-route').classList.remove('hidden');
+  el('route-items').innerHTML=routePoints.map((p,i)=>`<div id="route-row-${i}" class="rounded-xl border border-slate-200 p-3 bg-white">
+    <div class="flex items-center gap-2">
+      <input type="checkbox" class="route-select w-4 h-4 accent-rose-500" data-idx="${i}" aria-label="${escapeHtml(p.role)}を登録" ${p.checked?'checked':''}>
+      <span class="font-bold text-rose-600 text-xs shrink-0">${escapeHtml(p.role)}</span>
+      <input type="text" class="route-place-name min-w-0 flex-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" maxlength="150" data-idx="${i}" value="${escapeHtml(p.name)}" aria-label="登録するスポット名">
+    </div>
+    <div class="pl-6">
+      <p class="route-state text-[11px] text-slate-500 mt-1">位置を調べています…</p>
+      <div class="flex gap-3 items-center mt-1">
+        <a class="route-map-link hidden text-xs text-blue-700 underline" href="#" target="_blank" rel="noopener">地図で確認 <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
+        <button type="button" class="route-retry text-xs text-slate-600 underline" data-idx="${i}">名前で位置を再検索</button>
+      </div>
+    </div>
+  </div>`).join('');
+  routePoints.forEach((_,i)=>updateRouteRow(i));
+  el('route-progress').textContent=`${routePoints.length}地点を読み取りました。位置を確認中…`;
+  return resolveRoutePoints(routeRun);
+}
+async function resolveRoutePoint(i,run,retry=false) {
+  const p=routePoints[i]; if(!p)return;
+  const query=p.name.trim();
+  if(/^(現在地|現在の場所|自分の現在地|your location|my location|current location)$/i.test(query)) {
+    p.checked=false;p.status='error';p.message='現在地はURLだけでは特定できません';updateRouteRow(i);return;
+  }
+  if(!query){p.checked=false;p.status='error';p.message='名前を入力して再検索してください';updateRouteRow(i);return;}
+  if(retry){p.lat=null;p.lng=null;p.pref='';p.exactCoordinate=false;}
+  p.status='pending';p.message='位置を調べています…';updateRouteRow(i);
+  try {
+    if(!routeHasCoordinates(p)) {
+      const found=await searchLocation(query);
+      if(run!==routeRun || routePoints[i]!==p || p.name.trim()!==query)return;
+      p.lat=found.lat;p.lng=found.lng;p.pref=found.pref;
+    }
+    if(!p.pref) {
+      try {p.pref=await reversePrefecture(p.lat,p.lng);}catch{}
+    }
+    if(run!==routeRun || routePoints[i]!==p || p.name.trim()!==query)return;
+    p.status='ready';p.message='';
+  } catch(err) {
+    if(run!==routeRun || routePoints[i]!==p)return;
+    p.status='error';p.checked=false;
+    p.message=err.message||'位置情報を取得できませんでした';
+  }
+  updateRouteRow(i);
+}
+async function resolveRoutePoints(run) {
+  for(let i=0;i<routePoints.length;i++) {
+    if(run!==routeRun)return;
+    el('route-progress').textContent=`位置を確認中: ${i+1}/${routePoints.length}地点`;
+    await resolveRoutePoint(i,run);
+  }
+  if(run!==routeRun)return;
+  routeResolving=false;
+  const success=routePoints.filter(p=>p.status==='ready').length;
+  el('route-progress').textContent=`位置を取得できた地点: ${success}/${routePoints.length}件。登録する地点にチェックを入れてください。`;
+  routePoints.forEach((_,i)=>updateRouteRow(i));
+  refreshRouteImportButton();
+}
+function routeIsDuplicate(lat,lng,items) {
+  // 同じ地点が複数あるルートや、既に登録したスポットの重複を防ぐ（半径約30m）。
+  return items.some(p=>{
+    const cos=Math.cos((lat+p.lat)*Math.PI/360);
+    const meters=Math.hypot((p.lat-lat)*111200,(p.lng-lng)*111200*cos);
+    return meters<30;
+  });
+}
+function saveRoutePlaces() {
+  if(routeResolving)return;
+  const selected=routePoints.filter(p=>p.checked && p.status==='ready' && routeHasCoordinates(p) && p.name.trim());
+  if(!selected.length){notify('登録する地点を選んでください');return;}
+  let added=0, skipped=0;
+  const tracked=[...visitedPlaces];
+  for(const item of selected) {
+    if(routeIsDuplicate(item.lat,item.lng,tracked)){skipped++;continue;}
+    const p=sanitizePlace({
+      id:createId(),name:item.name.trim(),lat:item.lat,lng:item.lng,
+      prefecture:item.pref,date:el('route-date').value||nowLocalDate(),
+      rating:5,comment:'',radius:Number(el('route-radius').value)||0.5,
+      color:el('route-color').value,updatedAt:Date.now()+added
+    });
+    if(!p)continue;
+    addOrUpdatePlace(p);
+    tracked.push(p);added++;
+  }
+  closeRouteModal();
+  if(added) {
+    closeAddModal();
+    const last=tracked[tracked.length-1];
+    if(last)map.flyTo([last.lat,last.lng],10,{duration:0.8});
+  }
+  notify(`${added}件のスポットを登録しました${skipped?`（重複${skipped}件は追加しませんでした）`:''}`);
+}
+
 function parseGoogleMapUrl(url) {
   // !3d緯度!4d経度 / !2d経度!3d緯度 / @地図中心 / ?q=座標
   let match=url.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
@@ -360,6 +578,13 @@ async function importMapUrl() {
       const payload=await r.json();
       if(!payload.url) throw new Error('短縮URLの展開結果が空でした');
       input=payload.url;
+    }
+    const route=parseGoogleRouteUrl(input);
+    if(route) {
+      if(!route.items.length) throw new Error('このルートURLから地点が見つかりませんでした。「出発地・目的地・経由地」が載った共有リンクをコピーしてください。');
+      status.textContent=`ルート内の${route.items.length}地点を抽出しました。登録する場所を選択してください。`;
+      await openRouteModal(route);
+      return;
     }
     const name=parseGooglePlaceName(input);
     if(name) el('input-name').value=name;
@@ -587,15 +812,26 @@ async function importJsonFile(file) {
   notify(`${changed}件を追加しました（既存の記録は維持）`);
 }
 function setupEventListeners() {
-  el('btn-hide-header').addEventListener('click',()=>{el('app-header').classList.add('hidden');el('btn-show-header').classList.remove('hidden');setTimeout(()=>map.invalidateSize(),200);});
-  el('btn-show-header').addEventListener('click',()=>{el('app-header').classList.remove('hidden');el('btn-show-header').classList.add('hidden');setTimeout(()=>map.invalidateSize(),200);});
+  // Only these header controls may hide/show the header, never map zoom events.
+  el('btn-hide-header').addEventListener('click',e=>{e.stopPropagation();el('app-header').classList.add('hidden');el('btn-show-header').classList.remove('hidden');setTimeout(()=>map.invalidateSize(),200);});
+  el('btn-show-header').addEventListener('click',e=>{e.stopPropagation();el('app-header').classList.remove('hidden');el('btn-show-header').classList.add('hidden');setTimeout(()=>map.invalidateSize(),200);});
+  const showHelp=()=>el('modal-help').classList.remove('hidden');
+  const closeHelp=()=>el('modal-help').classList.add('hidden');
+  el('btn-open-help').addEventListener('click',showHelp);
+  el('btn-close-help').addEventListener('click',closeHelp);
+  el('btn-help-done').addEventListener('click',closeHelp);
+  el('modal-help').addEventListener('click',e=>{if(e.target===el('modal-help'))closeHelp();});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape' && !el('modal-help').classList.contains('hidden'))closeHelp();});
   el('btn-toggle-panel').addEventListener('click',togglePanel);
   el('btn-close-panel').addEventListener('click',closePanel);
   el('btn-add-place').addEventListener('click',openAddModal);
   el('btn-close-modal').addEventListener('click',closeAddModal);
   el('modal-add').addEventListener('click',e=>{if(e.target===el('modal-add'))closeAddModal();});
   ['spots','prefectures','settings'].forEach(t=>el(`tab-${t}`).addEventListener('click',()=>switchTab(t)));
-  el('input-radius').addEventListener('input',e=>el('radius-value-display').textContent=`${e.target.value} km`);
+  el('input-radius').addEventListener('input',e=>{
+    delete e.target.dataset.legacyRadius;
+    el('radius-value-display').textContent=radiusLabel(selectedRadius());
+  });
   document.querySelectorAll('.star-btn').forEach(s=>s.addEventListener('click',()=>updateStarRatingUI(Number(s.dataset.value))));
   el('input-prefecture').addEventListener('change',()=>{
     selectedPrefManually=!!el('input-prefecture').value;
@@ -606,6 +842,26 @@ function setupEventListeners() {
     detectPrefecture(Number(el('input-lat').value),Number(el('input-lng').value));
   }));
   el('btn-parse-gmap').addEventListener('click',importMapUrl);
+  el('btn-close-route').addEventListener('click',closeRouteModal);
+  el('btn-cancel-route').addEventListener('click',closeRouteModal);
+  el('btn-import-route').addEventListener('click',saveRoutePlaces);
+  el('modal-route').addEventListener('click',e=>{if(e.target===el('modal-route'))closeRouteModal();});
+  el('route-items').addEventListener('change',e=>{
+    if(!e.target.classList.contains('route-select'))return;
+    const i=Number(e.target.dataset.idx),p=routePoints[i];
+    if(p){p.checked=e.target.checked;refreshRouteImportButton();}
+  });
+  el('route-items').addEventListener('input',e=>{
+    if(!e.target.classList.contains('route-place-name'))return;
+    const i=Number(e.target.dataset.idx),p=routePoints[i];
+    if(p){p.name=e.target.value;refreshRouteImportButton();}
+  });
+  el('route-items').addEventListener('click',async e=>{
+    const btn=e.target.closest('.route-retry');if(!btn)return;
+    const i=Number(btn.dataset.idx);if(routeResolving||!routePoints[i])return;
+    btn.disabled=true;
+    try {await resolveRoutePoint(i,routeRun,true);}finally{btn.disabled=false;refreshRouteImportButton();}
+  });
   el('btn-backfill-prefs').addEventListener('click',async()=>{
     const missing=visitedPlaces.filter(p=>!p.prefecture);
     const b=el('btn-backfill-prefs'), status=el('backfill-status');
@@ -651,7 +907,7 @@ function setupEventListeners() {
         id:editingPlaceId||createId(), name,lat,lng,
         date:el('input-date').value||nowLocalDate(),rating:currentRating,
         comment:el('input-comment').value.trim(),color:el('input-color').value,
-        radius:el('input-radius').value,prefecture:pref,updatedAt:Date.now()
+        radius:selectedRadius(),prefecture:pref,updatedAt:Date.now()
       });
       if(!p)throw new Error('記録内容に問題があります');
       addOrUpdatePlace(p);closeAddModal();focusOnMap(lat,lng);
