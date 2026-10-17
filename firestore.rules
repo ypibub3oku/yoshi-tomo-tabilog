@@ -1,0 +1,34 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 共有ルームIDは暗号学的乱数で生成した192ビットの秘密コード。
+    // コードを知る認証済みユーザーだけが、パスを指定して読み書きできる。
+    // 警告: これはリンク共有方式であり、厳密な二人限定アカウント認証ではない。
+    match /journeys/{roomId}/places/{placeId} {
+      function authorized() {
+        return request.auth != null && roomId.matches('^[a-f0-9]{48}$');
+      }
+      function validPlace() {
+        let d = request.resource.data;
+        return d.keys().hasOnly([
+          'id','name','lat','lng','date','rating','comment','color','radius','prefecture','updatedAt'
+        ])
+        && d.keys().hasAll(['id','name','lat','lng','rating','comment','color','radius','prefecture','updatedAt'])
+        && d.id is string && d.id == placeId
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 150
+        && d.lat is number && d.lat >= -90 && d.lat <= 90
+        && d.lng is number && d.lng >= -180 && d.lng <= 180
+        && d.rating is int && d.rating >= 1 && d.rating <= 5
+        && d.comment is string && d.comment.size() <= 3000
+        && d.color is string && d.color.matches('^#[a-fA-F0-9]{6}$')
+        && d.radius is int && d.radius >= 1 && d.radius <= 5
+        && d.prefecture is string && d.prefecture.size() <= 10
+        && d.updatedAt is number
+        && (!d.keys().hasAny(['date']) || (d.date is string && d.date.size() <= 10));
+      }
+      allow get, list: if authorized();
+      allow create, update: if authorized() && validPlace();
+      allow delete: if authorized();
+    }
+  }
+}
