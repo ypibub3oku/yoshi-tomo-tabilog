@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ヨシとトモの2人旅ログ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+        .pulse-marker {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(236, 72, 153, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 12px rgba(236, 72, 153, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(236, 72, 153, 0); }
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-800 flex flex-col h-screen">
+
+    <header class="bg-white/90 backdrop-blur-md border-b border-slate-200 z-20 px-4 py-3 flex items-center justify-between shadow-sm flex-shrink-0">
+        <div class="flex items-center space-x-2">
+            <div class="w-9 h-9 rounded-full bg-gradient-to-tr from-rose-500 to-pink-500 flex items-center justify-center text-white shadow-md">
+                <i class="fa-solid font-bold fa-heart"></i>
+            </div>
+            <div>
+                <h1 class="font-bold text-slate-800 text-base leading-tight">ヨシとトモの2人旅ログ</h1>
+                <p class="text-xs text-slate-500" id="stats-summary">行った都道府県: 0/47 | スポット: 0件</p>
+            </div>
+        </div>
+
+        <div class="flex items-center space-x-2">
+            <button id="btn-add-place" class="bg-gradient-to-r from-rose-500 to-pink-500 hover:from-rose-600 hover:to-pink-600 text-white font-medium text-xs sm:text-sm px-3 py-2 rounded-xl shadow-md transition flex items-center space-x-1.5 active:scale-95">
+                <i class="fa-solid fa-plus"></i>
+                <span>場所を追加</span>
+            </button>
+            <button id="btn-toggle-panel" class="bg-slate-100 hover:bg-slate-200 text-slate-700 p-2 rounded-xl transition text-sm">
+                <i class="fa-solid fa-bars"></i>
+            </button>
+        </div>
+    </header>
+
+    <div class="relative flex-1 w-full overflow-hidden">
+        
+        <!-- Leaflet Map Container -->
+        <div id="map"></div>
+
+        <!-- Float Status Badge -->
+        <div class="absolute bottom-6 left-4 z-10 bg-white/90 backdrop-blur-md px-3 py-2 rounded-2xl shadow-lg border border-slate-200 flex items-center space-x-2 text-xs">
+            <span class="inline-block w-3 h-3 rounded-full bg-rose-500 animate-ping"></span>
+            <span class="font-medium text-slate-700">塗りつぶし有効</span>
+        </div>
+
+        <!-- Slide-over Drawer / Panel -->
+        <div id="sidebar" class="absolute top-0 right-0 h-full w-full sm:w-96 bg-white/95 backdrop-blur-md shadow-2xl z-30 transition-transform duration-300 transform translate-x-full flex flex-col border-l border-slate-200">
+            
+            <div class="p-4 border-b border-slate-100 flex items-center justify-between">
+                <h2 class="font-bold text-slate-800 text-base flex items-center gap-2">
+                    <i class="fa-solid fa-list-check text-rose-500"></i>
+                    思い出の記録一覧
+                </h2>
+                <button id="btn-close-panel" class="text-slate-400 hover:text-slate-600 p-1">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Tabs -->
+            <div class="flex border-b border-slate-200 bg-slate-50/50">
+                <button id="tab-spots" class="flex-1 py-2.5 text-xs font-semibold text-rose-600 border-b-2 border-rose-500 transition">スポット一覧</button>
+                <button id="tab-prefectures" class="flex-1 py-2.5 text-xs font-medium text-slate-500 hover:text-slate-800 transition">都道府県の制覇度</button>
+                <button id="tab-settings" class="flex-1 py-2.5 text-xs font-medium text-slate-500 hover:text-slate-800 transition">共有・設定</button>
+            </div>
+
+            <!-- Tab Content -->
+            <div class="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                
+                <!-- Tab 1: Spot List -->
+                <div id="content-spots" class="space-y-3">
+                    <div id="spots-empty-state" class="text-center py-12">
+                        <i class="fa-solid fa-map-location-dot text-4xl text-slate-300 mb-3"></i>
+                        <p class="text-slate-500 text-sm font-medium">まだ場所が登録されていません</p>
+                        <p class="text-slate-400 text-xs mt-1">「場所を追加」ボタンから、2人で行った場所を登録してみましょう！</p>
+                    </div>
+                    <div id="spots-list-container" class="space-y-3"></div>
+                </div>
+
+                <!-- Tab 2: Prefectures Progress -->
+                <div id="content-prefectures" class="hidden space-y-4">
+                    <div class="bg-rose-50 p-3 rounded-xl border border-rose-100">
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-xs font-bold text-rose-800">日本全国 制覇率</span>
+                            <span id="pref-percentage" class="text-xs font-bold text-rose-600">0%</span>
+                        </div>
+                        <div class="w-full bg-rose-200 rounded-full h-2">
+                            <div id="pref-progress-bar" class="bg-rose-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div id="prefectures-grid" class="grid grid-cols-2 gap-2"></div>
+                </div>
+
+                <!-- Tab 3: Data Sharing / Settings -->
+                <div id="content-settings" class="hidden space-y-4 text-xs">
+                    
+                    <!-- GitHub + Vercel Auto-Update Guide -->
+                    <div class="bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4 rounded-2xl shadow-md border border-slate-700">
+                        <h3 class="font-bold text-sm mb-2 flex items-center gap-2 text-rose-400">
+                            <i class="fa-brands fa-github text-base"></i>
+                            自動更新（GitHub × Vercel）設定手順
+                        </h3>
+                        <p class="text-slate-300 text-[11px] leading-relaxed mb-3">
+                            コード更新のたびに手動でアップロード不要！GitHub上のコードを書き換えるだけで、自動でサイトが数十秒で最新状態に更新されます。
+                        </p>
+                        
+                        <ol class="list-decimal list-inside space-y-2 text-[11px] text-slate-200 bg-slate-800/80 p-3 rounded-xl border border-slate-700/50">
+                            <li><strong class="text-white">GitHubで新しい保管庫を作成:</strong> <a href="https://github.com/new" target="_blank" class="text-rose-300 underline">github.com/new</a> にアクセスし、リポジトリ名「<code class="bg-slate-900 px-1 py-0.5 rounded text-rose-300">yoshi-tomo-tabilog</code>」を作成。</li>
+                            <li><strong class="text-white">index.html を保存:</strong> 右上のコードをコピーし、リポジトリ内に <code class="bg-slate-900 px-1 py-0.5 rounded text-rose-300">index.html</code> ファイルとして保存。</li>
+                            <li><strong class="text-white">Vercelと連携:</strong> <a href="https://vercel.com/new" target="_blank" class="text-rose-300 underline">vercel.com/new</a> でGitHubの保管庫を選択して「Deploy」。</li>
+                            <li><strong class="text-white">URLを設定:</strong> Settings ➔ Domains で <code class="bg-slate-900 px-1 py-0.5 rounded text-rose-300">yoshi-tomo-tabilog.vercel.app</code> を追加。</li>
+                        </ol>
+                    </div>
+
+                    <div class="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                        <h3 class="font-bold text-slate-800 mb-1 flex items-center gap-1.5">
+                            <i class="fa-solid fa-users text-rose-500"></i>
+                            ヨシとトモのデータ同期方法
+                        </h3>
+                        <p class="text-slate-600 mb-3 leading-relaxed">
+                            このアプリはサーバー不要で安全に動いています。片方が追加したデータは「データ出力」して、もう1人に渡すことで簡単に合体・共有ができます。
+                        </p>
+                        <div class="flex gap-2">
+                            <button id="btn-export-data" class="flex-1 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 py-2 px-3 rounded-lg font-medium shadow-sm transition flex items-center justify-center gap-1">
+                                <i class="fa-solid fa-download"></i> データを出力
+                            </button>
+                            <label class="flex-1 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 py-2 px-3 rounded-lg font-medium shadow-sm transition cursor-pointer flex items-center justify-center gap-1">
+                                <i class="fa-solid fa-upload"></i> データを読み込み
+                                <input type="file" id="input-import-data" accept=".json" class="hidden">
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="bg-amber-50 p-3 rounded-xl border border-amber-200 text-amber-900">
+                        <h4 class="font-bold mb-1 flex items-center gap-1">
+                            <i class="fa-solid fa-map-pin"></i> Googleマップとの連携について
+                        </h4>
+                        <p class="leading-relaxed">
+                            スポットカードの「Googleマップで開く」を押すと、実際のGoogleマップアプリやウェブで詳細な経路・口コミを確認できます。
+                        </p>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-add" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-200">
+            
+            <div class="bg-slate-50 px-5 py-4 border-b border-slate-100 flex justify-between items-center">
+                <h3 class="font-bold text-slate-800 text-base flex items-center gap-2">
+                    <i class="fa-solid fa-location-dot text-rose-500"></i>
+                    思い出の場所を登録
+                </h3>
+                <button id="btn-close-modal" class="text-slate-400 hover:text-slate-600">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+
+            <form id="form-add-place" class="p-5 space-y-4 overflow-y-auto custom-scrollbar flex-1 text-sm">
+                
+                <!-- Place Name with Quick Search Integration -->
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">場所の名前・施設名 <span class="text-rose-500">*</span></label>
+                    <div class="flex gap-2">
+                        <input type="text" id="input-name" required placeholder="例: 東京タワー、嵐山の竹林" class="flex-1 px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none text-sm">
+                        <button type="button" id="btn-search-coords" class="bg-rose-500 hover:bg-rose-600 text-white text-xs px-3 py-2 rounded-xl transition font-medium flex items-center gap-1 flex-shrink-0 shadow-sm">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <span>位置を取得</span>
+                        </button>
+                    </div>
+                    <p id="search-status" class="text-[11px] text-slate-500 mt-1.5 hidden"></p>
+                </div>
+
+                <!-- Coordinates (Latitude / Longitude) -->
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">緯度 (Latitude)</label>
+                        <input type="number" step="any" id="input-lat" required placeholder="地図タップで自動入力" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none text-xs bg-slate-50">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">経度 (Longitude)</label>
+                        <input type="number" step="any" id="input-lng" required placeholder="地図タップで自動入力" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none text-xs bg-slate-50">
+                    </div>
+                </div>
+
+                <!-- Date -->
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">行った日</label>
+                    <input type="date" id="input-date" class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none text-sm">
+                </div>
+
+                <!-- Rating -->
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">2人の評価</label>
+                    <div class="flex items-center space-x-2 text-amber-400 text-xl" id="star-rating-container">
+                        <i class="fa-solid fa-star cursor-pointer star-btn" data-value="1"></i>
+                        <i class="fa-solid fa-star cursor-pointer star-btn" data-value="2"></i>
+                        <i class="fa-solid fa-star cursor-pointer star-btn" data-value="3"></i>
+                        <i class="fa-solid fa-star cursor-pointer star-btn" data-value="4"></i>
+                        <i class="fa-solid fa-star cursor-pointer star-btn" data-value="5"></i>
+                    </div>
+                </div>
+
+                <!-- Comment / Memory -->
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">思い出メモ・感想</label>
+                    <textarea id="input-comment" rows="2" placeholder="美味しかったお店や楽しかった思い出..." class="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none text-sm"></textarea>
+                </div>
+
+                <!-- Circle Radius Selector (1km - 5km) -->
+                <div>
+                    <div class="flex justify-between items-center mb-1">
+                        <label class="block text-xs font-bold text-slate-700">塗りつぶし範囲（半径）</label>
+                        <span id="radius-value-display" class="text-xs font-bold text-rose-500">1 km</span>
+                    </div>
+                    <input type="range" id="input-radius" min="1" max="5" step="1" value="1" class="w-full accent-rose-500 cursor-pointer">
+                    <div class="flex justify-between text-[10px] text-slate-400 mt-0.5">
+                        <span>1km (スポット周辺)</span>
+                        <span>3km</span>
+                        <span>5km (広域散策)</span>
+                    </div>
+                </div>
+
+                <!-- Color Code for Polygon Area -->
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ピン＆マップ塗りのカラー</label>
+                    <div class="flex items-center space-x-3">
+                        <input type="color" id="input-color" value="#ec4899" class="w-10 h-10 rounded-xl cursor-pointer border-0">
+                        <span class="text-xs text-slate-500">指定した半径で地図上に円グラデーションが塗られます</span>
+                    </div>
+                </div>
+
+                <!-- Submit Button -->
+                <div class="pt-2">
+                    <button type="submit" class="w-full bg-gradient-to-r from-rose-500 to-pink-500 hover:from-rose-600 hover:to-pink-600 text-white font-bold py-3 rounded-xl shadow-md transition active:scale-98">
+                        マップに登録する
+                    </button>
+                </div>
+            </form>
+
+        </div>
+    </div>
+
+    <script>
+        // Default Data & State
+        let map;
+        let visitedPlaces = [];
+        let mapMarkers = [];
+        let mapCircles = [];
+        let currentRating = 5;
+
+        // Prefectures List for Tracker
+        const PREFECTURES = [
+            "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
+            "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
+            "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県",
+            "静岡県", "愛知県", "三重県", "滋賀県", "京都府", "大阪府", "兵庫県",
+            "奈良県", "和歌山県", "鳥取県", "島根県", "岡山県", "広島県", "山口県",
+            "徳島県", "香川県", "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県",
+            "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県"
+        ];
+
+        // Default Sample Places if empty
+        const INITIAL_SAMPLES = [
+            {
+                id: '1',
+                name: '東京タワー',
+                lat: 35.658581,
+                lng: 139.745433,
+                date: '2025-10-14',
+                rating: 5,
+                comment: '夜景がとっても綺麗だった！周辺を散歩するのも最高。',
+                color: '#ec4899',
+                radius: 1,
+                prefecture: '東京都'
+            },
+            {
+                id: '2',
+                name: '伏見稲荷大社',
+                lat: 34.96714,
+                lng: 135.772671,
+                date: '2026-03-20',
+                rating: 5,
+                comment: '千本鳥居を最後まで登りきった達成感！',
+                color: '#f97316',
+                radius: 2,
+                prefecture: '京都府'
+            }
+        ];
+
+        window.onload = function() {
+            initMap();
+            loadStoredPlaces();
+            setupEventListeners();
+            updateUI();
+        };
+
+        // Initialize Leaflet Map
+        function initMap() {
+            // Centered near Japan
+            map = L.map('map', {
+                zoomControl: false
+            }).setView([36.575, 137.984], 6);
+
+            // Re-position Zoom Control to top-left
+            L.control.zoom({ position: 'topleft' }).addTo(map);
+
+            // 1. 国土地理院 Standard Tile (Public, highly reliable, no API key required)
+            const gsiTile = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
+                maxZoom: 18,
+                attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+            });
+
+            // 2. OpenStreetMap France / Wikimedia Alternative Fallback
+            const osmFrTile = L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
+                maxZoom: 20,
+                attribution: '&copy; OpenStreetMap France | &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            });
+
+            // 3. OSM Hot Tile Fallback
+            const osmHotTile = L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap contributors, Humanitarian OpenStreetMap Team'
+            });
+
+            // Add primary tile layer (GSI Japan Maps)
+            gsiTile.addTo(map);
+
+            // Layer selector for convenience
+            const baseMaps = {
+                "国土地理院 Standard": gsiTile,
+                "OSM 淡色マップ": osmHotTile,
+                "OSM 詳細マップ": osmFrTile
+            };
+            L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map);
+
+            // Map Click Event -> Direct Lat/Lng fill
+            map.on('click', function(e) {
+                document.getElementById('input-lat').value = e.latlng.lat.toFixed(6);
+                document.getElementById('input-lng').value = e.latlng.lng.toFixed(6);
+                openAddModal();
+            });
+        }
+
+        function loadStoredPlaces() {
+            const stored = localStorage.getItem('pair_map_places');
+            if (stored) {
+                try {
+                    visitedPlaces = JSON.parse(stored);
+                } catch(e) {
+                    visitedPlaces = [...INITIAL_SAMPLES];
+                }
+            } else {
+                visitedPlaces = [...INITIAL_SAMPLES];
+            }
+        }
+
+        function savePlaces() {
+            localStorage.setItem('pair_map_places', JSON.stringify(visitedPlaces));
+            updateUI();
+        }
+
+        function setupEventListeners() {
+            // Panel toggles
+            document.getElementById('btn-toggle-panel').addEventListener('click', togglePanel);
+            document.getElementById('btn-close-panel').addEventListener('click', closePanel);
+
+            // Modal toggles
+            document.getElementById('btn-add-place').addEventListener('click', openAddModal);
+            document.getElementById('btn-close-modal').addEventListener('click', closeAddModal);
+
+            // Radius slider update display
+            const radiusInput = document.getElementById('input-radius');
+            const radiusDisplay = document.getElementById('radius-value-display');
+            if (radiusInput && radiusDisplay) {
+                radiusInput.addEventListener('input', function() {
+                    radiusDisplay.textContent = `${this.value} km`;
+                });
+            }
+
+            // Modal backdrop click
+            document.getElementById('modal-add').addEventListener('click', function(e) {
+                if (e.target === this) closeAddModal();
+            });
+
+            // Tabs switching
+            document.getElementById('tab-spots').addEventListener('click', () => switchTab('spots'));
+            document.getElementById('tab-prefectures').addEventListener('click', () => switchTab('prefectures'));
+            document.getElementById('tab-settings').addEventListener('click', () => switchTab('settings'));
+
+            // Rating Stars Click
+            document.querySelectorAll('.star-btn').forEach(star => {
+                star.addEventListener('click', function() {
+                    currentRating = parseInt(this.getAttribute('data-value'));
+                    updateStarRatingUI(currentRating);
+                });
+            });
+
+            // Search Coordinates using OpenStreetMap Nominatim API
+            document.getElementById('btn-search-coords').addEventListener('click', async () => {
+                const query = document.getElementById('input-name').value.trim();
+                const statusEl = document.getElementById('search-status');
+
+                if (!query) {
+                    statusEl.textContent = '場所の名前を入力してから「位置を取得」を押してください。';
+                    statusEl.classList.remove('hidden', 'text-emerald-600', 'text-slate-500');
+                    statusEl.classList.add('text-amber-600');
+                    return;
+                }
+
+                statusEl.textContent = '位置情報を検索中...';
+                statusEl.classList.remove('hidden', 'text-amber-600', 'text-red-500');
+                statusEl.classList.add('text-slate-500');
+
+                try {
+                    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&accept-language=ja`);
+                    const data = await res.json();
+
+                    if (data && data.length > 0) {
+                        const top = data[0];
+                        document.getElementById('input-lat').value = parseFloat(top.lat).toFixed(6);
+                        document.getElementById('input-lng').value = parseFloat(top.lon).toFixed(6);
+                        
+                        statusEl.textContent = `位置を取得しました: ${top.display_name.split(',')[0]}`;
+                        statusEl.classList.remove('text-slate-500', 'text-amber-600', 'text-red-500');
+                        statusEl.classList.add('text-emerald-600');
+                    } else {
+                        statusEl.textContent = '位置が見つかりませんでした。地図上を直接タップして選択もできます。';
+                        statusEl.classList.remove('text-slate-500', 'text-emerald-600');
+                        statusEl.classList.add('text-red-500');
+                    }
+                } catch (e) {
+                    statusEl.textContent = '検索エラーが発生しました。地図上をタップして指定することも可能です。';
+                    statusEl.classList.remove('text-slate-500', 'text-emerald-600');
+                    statusEl.classList.add('text-red-500');
+                }
+            });
+
+            // Form Submit
+            document.getElementById('form-add-place').addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                const name = document.getElementById('input-name').value.trim();
+                const lat = parseFloat(document.getElementById('input-lat').value);
+                const lng = parseFloat(document.getElementById('input-lng').value);
+                const date = document.getElementById('input-date').value;
+                const comment = document.getElementById('input-comment').value.trim();
+                const color = document.getElementById('input-color').value;
+                const radius = parseInt(document.getElementById('input-radius').value, 10) || 1;
+
+                if (!name || isNaN(lat) || isNaN(lng)) return;
+
+                const newPlace = {
+                    id: Date.now().toString(),
+                    name,
+                    lat,
+                    lng,
+                    date: date || new Date().toISOString().split('T')[0],
+                    rating: currentRating,
+                    comment,
+                    color,
+                    radius
+                };
+
+                visitedPlaces.unshift(newPlace);
+                savePlaces();
+
+                closeAddModal();
+                focusOnMap(lat, lng);
+            });
+
+            document.getElementById('btn-share-direct')?.addEventListener('click', async () => {
+                const dataStr = JSON.stringify(visitedPlaces, null, 2);
+                const blob = new Blob([dataStr], { type: 'application/json' });
+                const file = new File([blob], `pair_map_data_${new Date().toISOString().split('T')[0]}.json`, { type: 'application/json' });
+
+                if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                    try {
+                        await navigator.share({
+                            title: 'ヨシとトモの2人旅ログ データ',
+                            text: '2人の旅ログ最新データです！アプリで読み込んでね。',
+                            files: [file]
+                        });
+                    } catch (err) {
+                        console.log('Share canceled or failed', err);
+                    }
+                } else {
+                    // Fallback to Clipboard copy or standard download
+                    document.getElementById('btn-export-data').click();
+                }
+            });
+
+            // Export & Import Data
+            document.getElementById('btn-export-data').addEventListener('click', () => {
+                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(visitedPlaces, null, 2));
+                const downloadAnchor = document.createElement('a');
+                downloadAnchor.setAttribute("href", dataStr);
+                downloadAnchor.setAttribute("download", `pair_map_data_${new Date().toISOString().split('T')[0]}.json`);
+                document.body.appendChild(downloadAnchor);
+                downloadAnchor.click();
+                downloadAnchor.remove();
+            });
+
+            document.getElementById('input-import-data').addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = function(evt) {
+                    try {
+                        const imported = JSON.parse(evt.target.result);
+                        if (Array.isArray(imported)) {
+                            visitedPlaces = imported;
+                            savePlaces();
+                        }
+                    } catch (err) {
+                        // handled silently or via UI
+                    }
+                };
+                reader.readAsText(file);
+            });
+        }
+
+        function updateUI() {
+            renderMapElements();
+            renderSpotsList();
+            renderPrefecturesTracker();
+            updateSummaryStats();
+        }
+
+        function renderMapElements() {
+            // Clear existing markers and circles
+            mapMarkers.forEach(m => map.removeLayer(m));
+            mapCircles.forEach(c => map.removeLayer(c));
+            mapMarkers = [];
+            mapCircles = [];
+
+            visitedPlaces.forEach(place => {
+                // Colored Fill Circle on Map (Radius in meters)
+                const radiusMeters = (place.radius || 1) * 1000;
+                const circle = L.circle([place.lat, place.lng], {
+                    color: place.color || '#ec4899',
+                    fillColor: place.color || '#ec4899',
+                    fillOpacity: 0.35,
+                    weight: 1.5,
+                    radius: radiusMeters
+                }).addTo(map);
+                mapCircles.push(circle);
+
+                // Heart Pin Marker
+                const customIcon = L.divIcon({
+                    className: 'custom-pin',
+                    html: `<div style="background-color: ${place.color || '#ec4899'};" class="w-8 h-8 rounded-full flex items-center justify-center text-white shadow-lg border-2 border-white transform transition hover:scale-110"><i class="fa-solid fa-heart text-xs"></i></div>`,
+                    iconSize: [32, 32],
+                    iconAnchor: [16, 16]
+                });
+
+                const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${place.lat},${place.lng}`;
+                const stars = '★'.repeat(place.rating || 5) + '☆'.repeat(5 - (place.rating || 5));
+
+                const popupContent = `
+                    <div class="p-1 max-w-xs font-sans">
+                        <h3 class="font-bold text-slate-800 text-sm mb-1">${escapeHtml(place.name)}</h3>
+                        <div class="text-amber-500 text-xs mb-1">${stars}</div>
+                        <p class="text-xs text-slate-500 mb-1"><i class="fa-regular fa-calendar-days mr-1"></i>${place.date || '日付不明'}</p>
+                        ${place.comment ? `<p class="text-xs text-slate-700 bg-slate-50 p-2 rounded mb-2 leading-relaxed">${escapeHtml(place.comment)}</p>` : ''}
+                        <div class="flex gap-2 mt-2">
+                            <a href="${googleMapsUrl}" target="_blank" class="flex-1 bg-rose-500 hover:bg-rose-600 text-white text-[11px] font-medium py-1.5 px-2 rounded text-center transition">
+                                <i class="fa-solid fa-map-location-dot mr-1"></i>Googleマップ
+                            </a>
+                            <button onclick="deletePlace('${place.id}')" class="text-slate-400 hover:text-red-500 text-xs px-1">
+                                <i class="fa-solid fa-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+
+                const marker = L.marker([place.lat, place.lng], { icon: customIcon }).addTo(map);
+                marker.bindPopup(popupContent);
+                mapMarkers.push(marker);
+            });
+        }
+
+        function renderSpotsList() {
+            const container = document.getElementById('spots-list-container');
+            const emptyState = document.getElementById('spots-empty-state');
+
+            if (visitedPlaces.length === 0) {
+                emptyState.classList.remove('hidden');
+                container.innerHTML = '';
+                return;
+            }
+
+            emptyState.classList.add('hidden');
+            container.innerHTML = visitedPlaces.map(place => {
+                const stars = '★'.repeat(place.rating || 5) + '☆'.repeat(5 - (place.rating || 5));
+                const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${place.lat},${place.lng}`;
+
+                return `
+                    <div class="bg-white p-3.5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition group">
+                        <div class="flex items-start justify-between gap-2 mb-1.5">
+                            <div class="flex items-center space-x-2">
+                                <span class="w-3 h-3 rounded-full flex-shrink-0" style="background-color: ${place.color || '#ec4899'}"></span>
+                                <h4 class="font-bold text-slate-800 text-sm leading-tight">${escapeHtml(place.name)}</h4>
+                            </div>
+                            <button onclick="deletePlace('${place.id}')" class="text-slate-300 hover:text-rose-500 transition text-xs p-1">
+                                <i class="fa-solid fa-trash"></i>
+                            </button>
+                        </div>
+                        <div class="flex items-center text-xs text-slate-400 space-x-3 mb-2">
+                            <span><i class="fa-regular fa-calendar mr-1"></i>${place.date || ''}</span>
+                            <span class="text-amber-400 font-medium">${stars}</span>
+                            <span class="bg-rose-50 text-rose-600 text-[10px] px-1.5 py-0.5 rounded-full font-medium">半径 ${place.radius || 1}km</span>
+                        </div>
+                        ${place.comment ? `<p class="text-xs text-slate-600 bg-slate-50 p-2 rounded-xl mb-2 leading-relaxed">${escapeHtml(place.comment)}</p>` : ''}
+                        <div class="flex gap-2">
+                            <button onclick="focusOnMap(${place.lat}, ${place.lng})" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1">
+                                <i class="fa-solid fa-location-crosshairs text-rose-500"></i> 地図で表示
+                            </button>
+                            <a href="${googleMapsUrl}" target="_blank" class="flex-1 bg-rose-50 border border-rose-100 hover:bg-rose-100 text-rose-600 py-1.5 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1">
+                                <i class="fa-solid fa-map-location-dot"></i> Google Maps
+                            </a>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderPrefecturesTracker() {
+            const grid = document.getElementById('prefectures-grid');
+            
+            // Collect matching visited places
+            const visitedPrefSet = new Set();
+            visitedPlaces.forEach(p => {
+                PREFECTURES.forEach(pref => {
+                    if (p.name.includes(pref) || (p.comment && p.comment.includes(pref))) {
+                        visitedPrefSet.add(pref);
+                    }
+                });
+            });
+
+            grid.innerHTML = PREFECTURES.map(pref => {
+                const isVisited = visitedPrefSet.has(pref);
+                return `
+                    <div class="p-2 rounded-xl border ${isVisited ? 'bg-rose-500 text-white border-rose-500 font-bold' : 'bg-slate-50 text-slate-500 border-slate-200'} text-xs flex items-center justify-between transition">
+                        <span>${pref}</span>
+                        <i class="fa-solid ${isVisited ? 'fa-circle-check text-white' : 'fa-circle text-slate-200'} text-xs"></i>
+                    </div>
+                `;
+            }).join('');
+
+            const ratio = Math.round((visitedPrefSet.size / PREFECTURES.length) * 100);
+            document.getElementById('pref-percentage').textContent = `${ratio}%`;
+            document.getElementById('pref-progress-bar').style.width = `${ratio}%`;
+            document.getElementById('stats-summary').textContent = `制覇都道府県: ${visitedPrefSet.size}/47 | スポット: ${visitedPlaces.length}件`;
+        }
+
+        function updateSummaryStats() {
+            renderPrefecturesTracker();
+        }
+
+        function focusOnMap(lat, lng) {
+            map.flyTo([lat, lng], 12, { duration: 1.2 });
+            closePanel();
+        }
+
+        function deletePlace(id) {
+            visitedPlaces = visitedPlaces.filter(p => p.id !== id);
+            savePlaces();
+        }
+
+        // Drawer Controls
+        function togglePanel() {
+            const panel = document.getElementById('sidebar');
+            panel.classList.toggle('translate-x-full');
+        }
+
+        function closePanel() {
+            document.getElementById('sidebar').classList.add('translate-x-full');
+        }
+
+        // Modal Controls
+        function openAddModal() {
+            document.getElementById('modal-add').classList.remove('hidden');
+            if (!document.getElementById('input-date').value) {
+                document.getElementById('input-date').value = new Date().toISOString().split('T')[0];
+            }
+        }
+
+        function closeAddModal() {
+            document.getElementById('modal-add').classList.add('hidden');
+            document.getElementById('form-add-place').reset();
+            updateStarRatingUI(5);
+        }
+
+        // Rating UI helper
+        function updateStarRatingUI(rating) {
+            const stars = document.querySelectorAll('.star-btn');
+            stars.forEach((s, idx) => {
+                if (idx < rating) {
+                    s.classList.remove('fa-regular');
+                    s.classList.add('fa-solid');
+                } else {
+                    s.classList.remove('fa-solid');
+                    s.classList.add('fa-regular');
+                }
+            });
+        }
+
+        // Tab Switcher
+        function switchTab(tabName) {
+            const tabs = ['spots', 'prefectures', 'settings'];
+            tabs.forEach(t => {
+                const btn = document.getElementById(`tab-${t}`);
+                const content = document.getElementById(`content-${t}`);
+                if (t === tabName) {
+                    btn.classList.add('text-rose-600', 'border-b-2', 'border-rose-500', 'font-semibold');
+                    btn.classList.remove('text-slate-500', 'font-medium');
+                    content.classList.remove('hidden');
+                } else {
+                    btn.classList.remove('text-rose-600', 'border-b-2', 'border-rose-500', 'font-semibold');
+                    btn.classList.add('text-slate-500', 'font-medium');
+                    content.classList.add('hidden');
+                }
+            });
+        }
+
+        // Utility
+        function escapeHtml(str) {
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+    </script>
+</body>
+</html>
