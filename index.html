@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>ヨシトモの二人旅ログ</title>
+    <!-- サイトとスマートフォンのホーム画面のアイコン -->
+    <meta name="theme-color" content="#ec4899">
+    <meta name="apple-mobile-web-app-title" content="二人旅ログ">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <link rel="icon" href="./favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+    <link rel="manifest" href="./manifest.webmanifest">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-auth-compat.js"></script>
@@ -45,9 +54,7 @@
 
     <header id="app-header" class="bg-white/90 backdrop-blur-md border-b border-slate-200 z-20 px-4 py-3 flex items-center justify-between shadow-sm flex-shrink-0 transition-all duration-300">
         <div class="flex items-center space-x-2">
-            <div class="w-9 h-9 rounded-full bg-gradient-to-tr from-rose-500 to-pink-500 flex items-center justify-center text-white shadow-md">
-                <i class="fa-solid font-bold fa-heart"></i>
-            </div>
+            <img src="./icon-192.png" alt="ヨシトモの二人旅ログ アイコン" width="36" height="36" class="w-9 h-9 rounded-full object-cover border border-rose-100 shadow-md flex-shrink-0">
             <div>
                 <h1 class="font-bold text-slate-800 text-base leading-tight">ヨシトモの二人旅ログ</h1>
                 <p class="text-xs text-slate-500" id="stats-summary">行った都道府県: 0/47 | スポット: 0件</p>
@@ -195,7 +202,7 @@
                 <div class="bg-rose-50/80 border border-rose-200 p-3 rounded-xl space-y-1.5">
                     <label class="block text-xs font-bold text-rose-800 flex items-center gap-1.5">
                         <i class="fa-solid fa-link text-rose-500"></i>
-                        Googleマップ共有URLから取り込み
+                        Googleマップ共有URLから取り込み（スポット・ルート）
                     </label>
                     <div class="flex gap-2">
                         <input type="text" id="input-gmap-url" placeholder="https://maps.app.goo.gl/... または URL貼り付け" class="flex-1 px-3 py-1.5 border border-rose-200 rounded-lg focus:ring-2 focus:ring-rose-500 focus:outline-none text-xs bg-white">
@@ -203,7 +210,8 @@
                             <span>読み込み</span>
                         </button>
                     </div>
-                    <p id="gmap-status" class="text-[10px] text-slate-500 hidden"></p>
+                    <p id="gmap-status" class="text-[11px] text-slate-600 hidden" aria-live="polite"></p>
+                    <p class="text-[10px] text-rose-800">経路の共有URLなら、出発地・経由地・目的地を一覧で確認して一括登録できます。</p>
                 </div>
 
                 <!-- Place Name with Quick Search Integration -->
@@ -283,6 +291,45 @@
                 </div>
             </form>
 
+        </div>
+    </div>
+
+    <!-- Googleマップの経路から複数スポットを登録するための確認画面 -->
+    <div id="modal-route" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[70] flex items-center justify-center p-3 hidden" role="dialog" aria-modal="true" aria-labelledby="route-modal-title">
+        <div class="bg-white w-full max-w-lg rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden">
+            <div class="px-5 py-4 bg-rose-50 border-b border-rose-100 flex items-center justify-between gap-2">
+                <div>
+                    <h3 id="route-modal-title" class="font-bold text-slate-800 text-base">ルートのスポットを一括登録</h3>
+                    <p class="text-xs text-slate-500 mt-1">登録する場所にチェックを入れてください</p>
+                </div>
+                <button id="btn-close-route" type="button" class="text-slate-500 hover:text-slate-900 p-2" aria-label="閉じる"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="overflow-y-auto custom-scrollbar flex-1 p-4 space-y-3">
+                <p id="route-note" class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">地名から推定した位置は、必ずGoogleマップで確認してください。</p>
+                <p id="route-progress" class="text-xs text-slate-600 font-medium" aria-live="polite"></p>
+                <div id="route-items" class="space-y-2"></div>
+                <div class="grid grid-cols-2 gap-3 border-t border-slate-100 pt-3">
+                    <div>
+                        <label for="route-date" class="block text-xs font-bold text-slate-600 mb-1">訪問日</label>
+                        <input type="date" id="route-date" class="w-full px-2 py-2 rounded-lg border border-slate-300 text-sm">
+                    </div>
+                    <div>
+                        <label for="route-radius" class="block text-xs font-bold text-slate-600 mb-1">塗りつぶし半径</label>
+                        <select id="route-radius" class="w-full px-2 py-2 rounded-lg border border-slate-300 text-sm bg-white">
+                            <option value="1">1 km</option><option value="2">2 km</option><option value="3">3 km</option><option value="4">4 km</option><option value="5">5 km</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="route-color" class="block text-xs font-bold text-slate-600 mb-1">スポットの色</label>
+                        <input type="color" id="route-color" value="#ec4899" class="w-12 h-9 rounded-lg border border-slate-200">
+                    </div>
+                    <div class="text-[11px] text-slate-500 flex items-center">評価は初期値の★5で登録され、後から編集できます。</div>
+                </div>
+            </div>
+            <div class="px-4 py-3 border-t border-slate-100 bg-white space-y-2">
+                <button id="btn-import-route" type="button" disabled class="w-full rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-bold py-3 disabled:opacity-50 disabled:cursor-not-allowed">選択したスポットを登録</button>
+                <button id="btn-cancel-route" type="button" class="w-full rounded-xl border border-slate-200 bg-white text-slate-600 py-2 text-sm">キャンセル</button>
+            </div>
         </div>
     </div>
 
