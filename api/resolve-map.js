@@ -64,12 +64,29 @@ function normalizedName(value) {
   if(s.length<2 || s.length>120 || isOpaqueMapsToken(s) || isAddressLike(s)) return '';
   return s;
 }
+// Some Google Maps Android share URLs encode an address AND the selected
+// business in one /place/ segment, e.g.
+// "〒105-0011 東京都港区芝公園４丁目２−８ 東京タワー".
+// Preserve the business only when there is an unambiguous street-number/name
+// boundary. An address alone is never a place name.
+function nameAppendedToAddress(value) {
+  const s=String(value||'').replace(/[\u00a0\u3000]/g,' ').replace(/\s+/g,' ').trim();
+  const hasAddressPrefix=/^(?:〒\s*[0-9０-９]{3}[-−‐－][0-9０-９]{4}|(?:北海道|東京都|京都府|大阪府|[\p{Script=Han}]{2,4}県))/u.test(s);
+  if(!hasAddressPrefix)return '';
+  // Exclude the postal-code digits; otherwise 105-0011 is mistaken for the street number.
+  const withoutPostcode=s.replace(/^〒\s*[0-9０-９]{3}[-−‐－][0-9０-９]{4}\s*/u,'');
+  const m=withoutPostcode.match(/(?:[0-9０-９]+丁目\s*)?[0-9０-９]+(?:[-−‐－ー][0-9０-９]+){1,4}\s+(.+)$/u);
+  if(!m)return '';
+  const candidate=m[1].trim();
+  return normalizedName(candidate);
+}
 function urlPlaceName(raw) {
   try {
     const u=safeGoogleUrl(raw);
     const p=u.pathname.match(/\/(?:maps\/)?(?:place|search)\/([^/@?#]+)/i);
     if(p) {
-      const n=normalizedName(decodeURIComponent(p[1].replace(/\+/g,' ')));
+      const segment=decodeURIComponent(p[1].replace(/\+/g,' '));
+      const n=normalizedName(segment)||nameAppendedToAddress(segment);
       if(n) return n;
     }
     for(const field of ['query','q']) {
@@ -225,11 +242,11 @@ async function resolve(raw) {
 }
 module.exports=async function handler(req,res) {
   res.setHeader('Cache-Control','no-store');
-  res.setHeader('X-Odekake-Resolver','v10');
+  res.setHeader('X-Odekake-Resolver','v12');
   if(req.method!=='GET')return res.status(405).json({error:'GETだけに対応しています'});
   const raw=req.query?.url;
   if(typeof raw!=='string'||raw.length>3500)return res.status(400).json({error:'URLを正しく指定してください'});
   try {return res.status(200).json(await resolve(raw));}
   catch(err){return res.status(502).json({error:`共有URLを解析できませんでした: ${err.message}`});}
 };
-module.exports._test={safeGoogleUrl,normalizedName,urlPlaceName,htmlPlaceName,isAddressLike,isOpaqueMapsToken,placeCoords,resolve,htmlDestination};
+module.exports._test={safeGoogleUrl,normalizedName,urlPlaceName,htmlPlaceName,isAddressLike,isOpaqueMapsToken,placeCoords,resolve,htmlDestination,nameAppendedToAddress};
