@@ -1,5 +1,5 @@
 /**
- * Google Maps short URL resolver for Vercel (redirect-first, no page fetch needed if location has a place name).
+ * Google Maps URL resolver for Vercel (validated place names only).
  * - Expands maps.app.goo.gl / goo.gl/maps redirects.
  * - Attempts to retrieve a genuine place title from the Google Maps page.
  * - Never guesses a place name from a street address.
@@ -30,19 +30,38 @@ function decodeEntities(s) {
     return original;
   });
 }
+// Google Maps URLs may carry opaque IDs or internal data as if they were a place
+// segment. Only human-readable, unambiguous names are accepted.
+function isOpaqueMapsToken(value) {
+  const s=String(value||'').trim();
+  return !s ||
+    /^(?:data[=:]|!\d+[a-z]|0x[0-9a-f]+(?::0x[0-9a-f]+)?$|ChIJ[A-Za-z0-9_-]{8,}$|place_id\s*[:=]|cid\s*[:=]|(?:null|undefined|nan|unknown))/.test(s) ||
+    /(?:!\d+[a-z]|\b(?:ftid|skid|g_ep|entry|authuser|ved|hl|gl)=)/i.test(s) ||
+    /^(?:[a-f0-9]{24,}|[A-Za-z0-9_-]{38,})$/i.test(s) ||
+    /^(?:https?:|www\.|maps\.|\/)/i.test(s) ||
+    /^(?:[-+]?\d+(?:\.\d+)?\s*,\s*[-+]?\d+(?:\.\d+)?)$/.test(s) ||
+    /(?:%[0-9a-f]{2}){4,}/i.test(s) ||
+    /[{}<>\[\]\\]/.test(s);
+}
 function isAddressLike(text) {
   const s=String(text||'').trim();
-  return !s || /^(?:〒|郵便番号|\d{3}-\d{4}\b|\d{1,5}\s+\w+\s+(?:st|rd|ave|blvd)\b)/i.test(s) ||
-    /^(?:東京都|大阪府|京都府|北海道|.{2,4}県|日本、|Japan,|\d{1,3}[-–]\d{1,3}[-–]\d{1,4})/.test(s) ||
-    /(?:\d+[‐ー−-]\d+(?:[‐ー−-]\d+)?|丁目|番地|番[0-9一二三四五六七八九十]+号)/.test(s) ||
-    /^(?:Google (?:Maps|マップ)|地図|Map)(?:\s*[-|—].*)?$/i.test(s);
+  // Distinguish an address ("東京都港区芝公園4丁目2-8") from a store name
+  // ("セブン-イレブン 新宿三丁目店"). The old rule rejected every "丁目".
+  return !s || /^(?:〒|郵便番号|\d{3}-\d{4}\b|日本[,、\s]|Japan[,\s])/i.test(s) ||
+    /^(?:(?:北海道|東京都|大阪府|京都府|.{2,4}県).{0,95}(?:\d+丁目|[0-9０-９]+[-‐－ー−][0-9０-９]+|番地|\d+番\d*号))/.test(s) ||
+    /^\d{1,5}\s+\w+(?:\s+\w+){0,5}\s+(?:st|street|rd|road|ave|avenue|blvd)\b/i.test(s) ||
+    /^(?:Google\s*(?:Maps|マップ)|Googleマップ|地図|Map|Maps|Search|Place|Directions)(?:\s*[-|—].*)?$/i.test(s) ||
+    /^(?:Sign in|Before you continue|Access Denied|Page Not Found|Error \d+|お探しのページ|ログイン|ページが見つかりません)/i.test(s);
 }
 function normalizedName(value) {
   let s=decodeEntities(value).replace(/<[^>]*>/g,'').replace(/[\u0000-\u001f\u007f]/g,' ').trim();
-  // Strip Google Maps suffix, not parts of the actual business name.
-  s=s.replace(/\s*[-–—|]\s*Google\s*(?:Maps|マップ)\s*$/i,'').replace(/\s*[-–—|]\s*Google マップ\s*$/,'').trim();
-  s=s.replace(/\s*[|–—]\s*Google マップ\s*$/,'').trim();
-  if (s.length>150 || isAddressLike(s)) return '';
+  // Remove a Maps page suffix, without removing hyphens within store names.
+  if(isAddressLike(s)) return '';
+  s=s.replace(/\s*[-–—|]\s*Google\s*(?:Maps|マップ)\s*$/i,'').trim();
+  // A share label may append an address after a comma or postal marker.
+  s=s.split(/\s*[、,]\s*(?=(?:〒|日本[、, ]|北海道|東京都|大阪府|京都府|.{2,4}県))/)[0].trim();
+  s=s.split(/\s+(?=〒\s*\d{3}-\d{4})/)[0].trim();
+  if(s.length<2 || s.length>120 || isOpaqueMapsToken(s) || isAddressLike(s)) return '';
   return s;
 }
 function urlPlaceName(raw) {
@@ -187,11 +206,11 @@ async function resolve(raw) {
 }
 module.exports=async function handler(req,res) {
   res.setHeader('Cache-Control','no-store');
-  res.setHeader('X-Odekake-Resolver','v8');
+  res.setHeader('X-Odekake-Resolver','v9');
   if(req.method!=='GET')return res.status(405).json({error:'GETだけに対応しています'});
   const raw=req.query?.url;
   if(typeof raw!=='string'||raw.length>3500)return res.status(400).json({error:'URLを正しく指定してください'});
   try {return res.status(200).json(await resolve(raw));}
   catch(err){return res.status(502).json({error:`共有URLを解析できませんでした: ${err.message}`});}
 };
-module.exports._test={safeGoogleUrl,normalizedName,urlPlaceName,htmlPlaceName,isAddressLike,placeCoords,resolve};
+module.exports._test={safeGoogleUrl,normalizedName,urlPlaceName,htmlPlaceName,isAddressLike,isOpaqueMapsToken,placeCoords,resolve};
