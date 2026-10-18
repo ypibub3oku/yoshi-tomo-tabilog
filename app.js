@@ -1,4 +1,4 @@
-/* ヨシトモの二人旅ログ — version 10
+/* ヨシトモの二人旅ログ — version 11 (mobile place import)
  * データはローカル保存。Firebase設定・共有コードを入力すると2人でリアルタイム同期。
  * Google Maps短縮URLの展開には同梱のVercel APIが必要です。
  */
@@ -377,7 +377,10 @@ async function applyLocation(lat,lng,pref='') {
     el('input-prefecture').value=pref;
     el('pref-status').textContent=`自動判定: ${pref}`;
   } else if(!selectedPrefManually) {
-    await detectPrefecture(lat,lng);
+    // Do not wait on OSM reverse lookup: the mobile network can be slow or
+    // blocked, but the verified Google name and coordinates must be usable now.
+    // detectPrefecture handles its own errors and updates only the prefecture.
+    void detectPrefecture(lat,lng);
   }
 }
 // Googleマップの経路URLに明示された地点だけを取り出す。地図の中心座標や
@@ -636,8 +639,8 @@ function parseGooglePlaceName(url) {
 }
 function sharedUrlAndTitle(text) {
   // Google Mapsの共有メニューからURLと施設名が一緒にコピーされた場合にも対応。
-  const raw=String(text||'').trim();
-  const match=raw.match(/https:\/\/[^\s<>"']+/i);
+  const raw=String(text||'').replace(/[\u200B-\u200D\uFEFF]/g,'').trim();
+  const match=raw.match(/https:\/\/[^\s<>"'　]+/i);
   if(!match)return {url:raw,sharedName:''};
   const url=match[0].replace(/[\])、。]+$/g,'');
   const rest=raw.replace(match[0],'').replace(/^(?:場所|名称|住所)[:：]\s*/,'').trim();
@@ -695,7 +698,10 @@ async function importMapUrl() {
   const pasted=sharedUrlAndTitle(el('input-gmap-url').value);
   let input=pasted.url;
   if(!input) {status.textContent='Googleマップの共有URLを貼り付けてください';return;}
-  status.textContent='施設名と位置情報を調べています…';
+  status.textContent='共有URLを解析しています…（v11）';
+  const loadButton=el('btn-parse-gmap');
+  loadButton.disabled=true;
+  loadButton.setAttribute('aria-busy','true');
   try {
     const u=new URL(input);
     if(u.protocol!=='https:' || !isGoogleMapHost(u.hostname.toLowerCase()))throw new Error('GoogleマップのHTTPS URLを入力してください');
@@ -705,10 +711,19 @@ async function importMapUrl() {
     if(isShort) {
       if(location.protocol==='file:')throw new Error('短縮URLの読み込みにはVercelへの公開が必要です');
       const result=await getGoogleMapInfo(input);
-      input=result.url;serverName=parseGooglePlaceName(result.url)||result.name;serverCoords=result.coords;
+      input=result.url;serverName=result.name || parseGooglePlaceName(result.url);serverCoords=result.coords;
+      // The resolver already supplied a verified name. Show it immediately,
+      // independently from the additional OSM prefecture lookup.
+      if(serverName) {
+        el('input-name').value=serverName;
+        status.textContent=`APIから施設名「${serverName}」を取得しました。位置情報を反映中…`;
+      } else {
+        status.textContent='APIには施設名がありませんでした。位置を確認中…';
+      }
     }
     const route=parseGoogleRouteUrl(input);
     if(route) {
+      el('input-name').value='';
       if(!route.items.length)throw new Error('このルートURLから地点が見つかりませんでした。「出発地・目的地・経由地」が載った共有リンクをコピーしてください。');
       status.textContent=`ルート内の${route.items.length}地点を抽出しました。登録する場所を選択してください。`;
       await openRouteModal(route);return;
@@ -730,10 +745,13 @@ async function importMapUrl() {
       // Do not reverse-geocode the nearest OSM POI as a guess: it may be a
       // different shop inside the same building or across the street.
       el('input-name').value=name||'';
-      await applyLocation(coords.lat,coords.lng);
+      // Fill the form before starting the optional prefecture lookup.
+      el('input-lat').value=Number(coords.lat).toFixed(6);
+      el('input-lng').value=Number(coords.lng).toFixed(6);
       status.textContent=name
-        ? `施設名「${name}」と位置を取得しました。確認して登録してください。`
+        ? `施設名「${name}」と位置を取得しました（v11）。確認して登録してください。都道府県は続けて自動判定します。`
         : '位置は取得できましたが、正確な施設名はURLから確認できませんでした。誤った名前を入れないため空欄にしています。Googleマップの施設名を「場所の名前」に入力してください。';
+      await applyLocation(coords.lat,coords.lng);
       return;
     }
     if(name) {
@@ -748,7 +766,12 @@ async function importMapUrl() {
       return;
     }
     throw new Error('URLから施設名・位置を取得できませんでした。場所の名前を入力して「位置を取得」を押してください。');
-  } catch(error) {status.textContent=error.message||'URLを読み込めませんでした';}
+  } catch(error) {
+    status.textContent=`読み込みエラー（v11）：${error.message||'URLを読み込めませんでした'}`;
+  } finally {
+    loadButton.disabled=false;
+    loadButton.removeAttribute('aria-busy');
+  }
 }
 
 // ----- Firebase / 2人の同期 -----
