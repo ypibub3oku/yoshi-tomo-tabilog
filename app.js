@@ -1,4 +1,4 @@
-/* ヨシトモの二人旅ログ — version 9
+/* ヨシトモの二人旅ログ — version 10
  * データはローカル保存。Firebase設定・共有コードを入力すると2人でリアルタイム同期。
  * Google Maps短縮URLの展開には同梱のVercel APIが必要です。
  */
@@ -673,8 +673,8 @@ async function getGoogleMapInfo(url) {
   }
   if(!response.ok) {
     let detail='';try{detail=(await response.json()).error||'';}catch{}
-    if(response.status===404) throw new Error('共有URL解析APIが見つかりません。GitHubの api/resolve-map.js の配置を確認してください（404）。');
-    throw new Error(detail||`Googleマップの短縮URLを解析できませんでした（${response.status}）。`);
+    if(response.status===404) throw new Error('共有URL解析APIが見つかりません（404）。GitHubの api/resolve-map.js の配置を確認してください。');
+    throw new Error(`${detail||'Googleマップ共有URLを解析できませんでした'}（API ${response.status}）。`);
   }
   let data;
   try {data=await response.json();}catch{
@@ -684,7 +684,11 @@ async function getGoogleMapInfo(url) {
   if(typeof data.url!=='string')throw new Error('共有URLの解析結果が空でした');
   const coords=data.coords && validCoord(Number(data.coords.lat),Number(data.coords.lng))
     ? {lat:Number(data.coords.lat),lng:Number(data.coords.lng)} : null;
-  return {url:data.url,name:normalizeSharedPlaceName(data.name),coords};
+  // The expanded Google Maps /place/ path remains an authoritative fallback.
+  // Never replace a good path name with an unusable page title or internal token.
+  const urlName=parseGooglePlaceName(data.url);
+  const serverName=normalizeSharedPlaceName(data.name);
+  return {url:data.url,name:urlName||serverName,coords};
 }
 async function importMapUrl() {
   const status=el('gmap-status');status.classList.remove('hidden');
@@ -701,7 +705,7 @@ async function importMapUrl() {
     if(isShort) {
       if(location.protocol==='file:')throw new Error('短縮URLの読み込みにはVercelへの公開が必要です');
       const result=await getGoogleMapInfo(input);
-      input=result.url;serverName=result.name;serverCoords=result.coords;
+      input=result.url;serverName=parseGooglePlaceName(result.url)||result.name;serverCoords=result.coords;
     }
     const route=parseGoogleRouteUrl(input);
     if(route) {
