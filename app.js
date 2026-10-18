@@ -1,4 +1,4 @@
-/* ヨシトモの二人旅ログ — version 8
+/* ヨシトモの二人旅ログ — version 9
  * データはローカル保存。Firebase設定・共有コードを入力すると2人でリアルタイム同期。
  * Google Maps短縮URLの展開には同梱のVercel APIが必要です。
  */
@@ -587,18 +587,34 @@ function parseGoogleMapUrl(url) {
   }
   return null;
 }
+// Keep the same strict place-name validation on the client and in the Vercel API.
+// A nearby business, street address, or Google internal ID is NOT a place name.
+function opaqueMapText(value) {
+  const s=String(value||'').trim();
+  return !s ||
+    /^(?:data[=:]|!\d+[a-z]|0x[0-9a-f]+(?::0x[0-9a-f]+)?$|ChIJ[A-Za-z0-9_-]{8,}$|place_id\s*[:=]|cid\s*[:=]|(?:null|undefined|nan|unknown))/i.test(s) ||
+    /(?:!\d+[a-z]|\b(?:ftid|skid|g_ep|entry|authuser|ved|hl|gl)=)/i.test(s) ||
+    /^(?:[a-f0-9]{24,}|[A-Za-z0-9_-]{38,})$/i.test(s) ||
+    /^(?:https?:|www\.|maps\.|\/)/i.test(s) ||
+    /^(?:[-+]?\d+(?:\.\d+)?\s*,\s*[-+]?\d+(?:\.\d+)?)$/.test(s) ||
+    /(?:%[0-9a-f]{2}){4,}/i.test(s) ||
+    /[{}<>\[\]\\]/.test(s);
+}
 function looksLikePostalAddress(value) {
-  const text=String(value||'').trim();
-  return !text || /^(?:〒|郵便番号|\d{3}-\d{4}\b|東京都|大阪府|京都府|北海道|.{2,4}県|日本、|Japan,)/i.test(text) ||
-    /(?:\d+[‐ー−-]\d+(?:[‐ー−-]\d+)?|丁目|番地|\d+番\d*号)/.test(text) ||
-    /^(?:Google Maps|Google マップ|地図)$/i.test(text);
+  const s=String(value||'').trim();
+  return !s || /^(?:〒|郵便番号|\d{3}-\d{4}\b|日本[,、\s]|Japan[,\s])/i.test(s) ||
+    /^(?:(?:北海道|東京都|大阪府|京都府|.{2,4}県).{0,95}(?:\d+丁目|[0-9０-９]+[-‐－ー−][0-9０-９]+|番地|\d+番\d*号))/.test(s) ||
+    /^\d{1,5}\s+\w+(?:\s+\w+){0,5}\s+(?:st|street|rd|road|ave|avenue|blvd)\b/i.test(s) ||
+    /^(?:Google\s*(?:Maps|マップ)|Googleマップ|地図|Map|Maps|Search|Place|Directions)(?:\s*[-|—].*)?$/i.test(s) ||
+    /^(?:Sign in|Before you continue|Access Denied|Page Not Found|Error \d+|お探しのページ|ログイン|ページが見つかりません)/i.test(s);
 }
 function normalizeSharedPlaceName(value) {
   let name=String(value??'').replace(/[\u0000-\u001f\u007f]/g,' ').trim();
+  if(looksLikePostalAddress(name)) return '';
   name=name.replace(/\s*[-–—|]\s*Google\s*(?:Maps|マップ)\s*$/i,'').trim();
-  // Google sometimes appends an address to a business name.
-  name=name.split('〒')[0].replace(/[,、]\s*(?=(?:東京都|大阪府|京都府|北海道|.{2,4}県))[^,、]*$/,'').trim();
-  return name.length<=150 && !looksLikePostalAddress(name) ? name : '';
+  name=name.split(/\s*[、,]\s*(?=(?:〒|日本[、, ]|北海道|東京都|大阪府|京都府|.{2,4}県))/)[0].trim();
+  name=name.split(/\s+(?=〒\s*\d{3}-\d{4})/)[0].trim();
+  return name.length>=2 && name.length<=120 && !opaqueMapText(name) && !looksLikePostalAddress(name) ? name : '';
 }
 function parseGooglePlaceName(url) {
   let u;
@@ -693,26 +709,27 @@ async function importMapUrl() {
       status.textContent=`ルート内の${route.items.length}地点を抽出しました。登録する場所を選択してください。`;
       await openRouteModal(route);return;
     }
-    let name=pasted.sharedName||parseGooglePlaceName(input)||serverName;
+    // Explicit text copied from the share sheet is strongest. For short links,
+    // prefer the name verified by the resolver; never overwrite it with an ID.
+    let name=pasted.sharedName||serverName||parseGooglePlaceName(input);
     // Some long Maps URLs contain only coordinates, an address, or a Google place ID.
     if(!name && !isShort && location.protocol!=='file:') {
       try {
         const result=await getGoogleMapInfo(input);
         input=result.url;
-        name=result.name||parseGooglePlaceName(input);
+        name=normalizeSharedPlaceName(result.name)||parseGooglePlaceName(input);
         serverCoords=result.coords||serverCoords;
       }catch { /* Continue with coordinates / location lookup below. */ }
     }
     const coords=serverCoords||parseGoogleMapUrl(input);
     if(coords && validCoord(coords.lat,coords.lng)) {
-      if(!name) {
-        try {name=await reverseSpotName(coords.lat,coords.lng);}catch{}
-      }
+      // Do not reverse-geocode the nearest OSM POI as a guess: it may be a
+      // different shop inside the same building or across the street.
       el('input-name').value=name||'';
       await applyLocation(coords.lat,coords.lng);
       status.textContent=name
         ? `施設名「${name}」と位置を取得しました。確認して登録してください。`
-        : '位置は取得しましたが施設名は判定できませんでした。「場所の名前」に施設名を入力してください。';
+        : '位置は取得できましたが、正確な施設名はURLから確認できませんでした。誤った名前を入れないため空欄にしています。Googleマップの施設名を「場所の名前」に入力してください。';
       return;
     }
     if(name) {
