@@ -1,4 +1,4 @@
-/* ヨシトモの二人旅ログ — version 7
+/* ヨシトモの二人旅ログ — version 8
  * データはローカル保存。Firebase設定・共有コードを入力すると2人でリアルタイム同期。
  * Google Maps短縮URLの展開には同梱のVercel APIが必要です。
  */
@@ -647,14 +647,28 @@ function isGoogleMapHost(host) {
   return /^(?:(?:www|maps)\.)?google\.(?:com|co\.jp|co\.uk|com\.au)$/.test(host) || host==='maps.app.goo.gl' || host==='goo.gl';
 }
 async function getGoogleMapInfo(url) {
-  const response=await fetch(`/api/resolve-map?url=${encodeURIComponent(url)}`);
+  let response;
+  try {
+    // The server API is essential for maps.app.goo.gl URLs (browser CORS
+    // prevents directly reading their redirects).
+    response=await fetch(`/api/resolve-map?url=${encodeURIComponent(url)}`,{cache:'no-store'});
+  } catch {
+    throw new Error('共有URLを読み取るサーバーに接続できませんでした。Vercelのデプロイ状態を確認してください。');
+  }
   if(!response.ok) {
     let detail='';try{detail=(await response.json()).error||'';}catch{}
-    throw new Error(detail||'Googleマップのリンクを解析できませんでした');
+    if(response.status===404) throw new Error('共有URL解析APIが見つかりません。GitHubの api/resolve-map.js の配置を確認してください（404）。');
+    throw new Error(detail||`Googleマップの短縮URLを解析できませんでした（${response.status}）。`);
   }
-  const data=await response.json();
-  if(!data || typeof data.url!=='string')throw new Error('共有URLの解析結果が空でした');
-  return {url:data.url,name:normalizeSharedPlaceName(data.name)};
+  let data;
+  try {data=await response.json();}catch{
+    throw new Error('共有URL解析APIがJSONを返していません。Vercelの api/resolve-map.js の公開設定を確認してください。');
+  }
+  if(typeof data==='string' || !data || typeof data!=='object')throw new Error('共有URL解析APIが正しいJSONを返していません。VercelのAPI公開設定を確認してください。');
+  if(typeof data.url!=='string')throw new Error('共有URLの解析結果が空でした');
+  const coords=data.coords && validCoord(Number(data.coords.lat),Number(data.coords.lng))
+    ? {lat:Number(data.coords.lat),lng:Number(data.coords.lng)} : null;
+  return {url:data.url,name:normalizeSharedPlaceName(data.name),coords};
 }
 async function importMapUrl() {
   const status=el('gmap-status');status.classList.remove('hidden');
@@ -667,10 +681,11 @@ async function importMapUrl() {
     if(u.protocol!=='https:' || !isGoogleMapHost(u.hostname.toLowerCase()))throw new Error('GoogleマップのHTTPS URLを入力してください');
     const isShort=/^(maps\.app\.goo\.gl|goo\.gl)$/.test(u.hostname.toLowerCase());
     let serverName='';
+    let serverCoords=null;
     if(isShort) {
       if(location.protocol==='file:')throw new Error('短縮URLの読み込みにはVercelへの公開が必要です');
       const result=await getGoogleMapInfo(input);
-      input=result.url;serverName=result.name;
+      input=result.url;serverName=result.name;serverCoords=result.coords;
     }
     const route=parseGoogleRouteUrl(input);
     if(route) {
@@ -685,9 +700,10 @@ async function importMapUrl() {
         const result=await getGoogleMapInfo(input);
         input=result.url;
         name=result.name||parseGooglePlaceName(input);
+        serverCoords=result.coords||serverCoords;
       }catch { /* Continue with coordinates / location lookup below. */ }
     }
-    const coords=parseGoogleMapUrl(input);
+    const coords=serverCoords||parseGoogleMapUrl(input);
     if(coords && validCoord(coords.lat,coords.lng)) {
       if(!name) {
         try {name=await reverseSpotName(coords.lat,coords.lng);}catch{}
