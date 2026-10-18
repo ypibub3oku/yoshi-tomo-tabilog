@@ -1,5 +1,5 @@
 /**
- * Google Maps URL resolver for Vercel (validated place names only).
+ * Google Maps URL resolver for Vercel (redirect fallback + validated place names).
  * - Expands maps.app.goo.gl / goo.gl/maps redirects.
  * - Attempts to retrieve a genuine place title from the Google Maps page.
  * - Never guesses a place name from a street address.
@@ -142,75 +142,94 @@ function infoFromUrl(u, source) {
   const name=urlPlaceName(u.toString());
   return {url:u.toString(),name,coords:placeCoords(u.toString()),source};
 }
+// Some Google short links return a redirect for GET, others for HEAD.  Also,
+// intermediate Google pages may expose the place through an og:url or canonical.
+function htmlDestination(html, fromUrl) {
+  const candidates = [];
+  const meta = metaValue(html,'og:url','content');
+  if(meta) candidates.push(meta);
+  for(const m of String(html).matchAll(/<link\b[^>]*>/gi)) {
+    const tag=m[0];
+    if(!/rel\s*=\s*['"]?canonical\b/i.test(tag)) continue;
+    const href=tag.match(/href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    if(href)candidates.push(href[1]||href[2]||href[3]);
+  }
+  const refresh = String(html).match(/<meta\b[^>]*http-equiv\s*=\s*['"]?refresh\b[^>]*>/i)?.[0];
+  const fromRefresh = refresh?.match(/url\s*=\s*['"]?([^'"\s>]+)/i)?.[1];
+  if(fromRefresh)candidates.push(fromRefresh);
+  for(const raw of candidates) {
+    try {return safeGoogleUrl(new URL(decodeEntities(raw),fromUrl).toString());}catch{}
+  }
+  return null;
+}
+async function fetchGoogle(u,method) {
+  return fetch(u.toString(),{
+    method,redirect:'manual',signal:AbortSignal.timeout(7500),
+    headers:{
+      'user-agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+      'accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'accept-language':'ja-JP,ja;q=0.9,en;q=0.6'
+    }
+  });
+}
 async function resolve(raw) {
   let u=safeGoogleUrl(raw);
-  // If the URL already identifies a place, never fetch Google again. Google often
-  // returns a consent/unsupported page when a backend fetches the destination.
   const initial=infoFromUrl(u,'url');
-  if (initial.name && initial.coords) return initial;
-  let html='';
-  for(let n=0;n<8;n++) {
-    const nested=unwrapLink(u);
-    if (nested) {
-      u=nested;
-      const identified=infoFromUrl(u,'wrapped-url');
-      if(identified.name && identified.coords) return identified;
-      continue;
-    }
-    let response;
-    try {
-      response=await fetch(u.toString(),{
-        method:'GET',redirect:'manual',signal:AbortSignal.timeout(8000),
-        headers:{
-          'user-agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          'accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'accept-language':'ja-JP,ja;q=0.9,en;q=0.6'
+  if(initial.name && initial.coords)return initial;
+  let foundHtml='',lastError=null;
+  const seen=new Set();
+  for(let hop=0;hop<9;hop++) {
+    const url=u.toString();
+    if(seen.has(url))break;
+    seen.add(url);
+    const wrapped=unwrapLink(u);
+    if(wrapped){u=wrapped;continue;}
+    const current=infoFromUrl(u,'redirect-url');
+    if(current.name && current.coords)return current;
+
+    let next=null, html='';
+    // GET is the default. HEAD is a fallback for pages that reject or block GET.
+    for(const method of ['GET','HEAD']) {
+      let response;
+      try {response=await fetchGoogle(u,method);}
+      catch(error){lastError=error;continue;}
+      if(response.status>=300 && response.status<400) {
+        const location=response.headers.get('location');
+        if(location){
+          try {next=safeGoogleUrl(new URL(location,u).toString());}catch {}
+          if(next)break;
         }
-      });
-    }catch(error) {
-      // If we have already found a genuine place URL, prefer the identified
-      // name over a later failure to fetch its HTML.
-      const partial=infoFromUrl(u,'redirect-url');
-      if(partial.name) return partial;
-      throw error;
-    }
-    if(response.status>=300 && response.status<400) {
-      const redirect=response.headers.get('location');
-      if(!redirect) break;
-      const next=new URL(redirect,u);
-      // Some Google pages redirect to a consent screen or other non-Maps host.
-      // Retain the last valid Google Maps destination if it already has the title.
-      try{u=safeGoogleUrl(next.toString());}
-      catch(error){
-        const partial=infoFromUrl(u,'redirect-url');
-        if(partial.name)return partial;
-        throw error;
       }
-      // CRITICAL: Stop on the first URL containing a valid place title and
-      // location. No second request to google.co.jp or consent.google.com.
-      const identified=infoFromUrl(u,'redirect-url');
-      if(identified.name && identified.coords) return identified;
-      continue;
+      if(method==='GET' && response.ok) {
+        html=await firstHtml(response).catch(()=> '');
+        foundHtml=html||foundHtml;
+        next=htmlDestination(html,u);
+        if(next)break;
+      }
+      if(response.ok && !next)break;
     }
-    if(response.ok) html=await firstHtml(response);
+    if(next){u=next;continue;}
     break;
   }
-  if(['maps.app.goo.gl','goo.gl'].includes(u.hostname.toLowerCase()))
-    throw new Error('Google側から転送先URLを取得できませんでした');
   const result=infoFromUrl(u,'final-url');
-  if(!result.name && html) {
-    result.name=htmlPlaceName(html);
-    if(result.name) result.source='page-title';
+  if(!result.name && foundHtml){
+    result.name=htmlPlaceName(foundHtml);
+    if(result.name)result.source='page-title';
+  }
+  const isUnexpanded=['maps.app.goo.gl','goo.gl'].includes(u.hostname.toLowerCase());
+  if(isUnexpanded) {
+    const reason=lastError ? '（Google側への通信が失敗した可能性があります）' : '';
+    throw new Error('Googleの短縮URLを展開できませんでした'+reason);
   }
   return result;
 }
 module.exports=async function handler(req,res) {
   res.setHeader('Cache-Control','no-store');
-  res.setHeader('X-Odekake-Resolver','v9');
+  res.setHeader('X-Odekake-Resolver','v10');
   if(req.method!=='GET')return res.status(405).json({error:'GETだけに対応しています'});
   const raw=req.query?.url;
   if(typeof raw!=='string'||raw.length>3500)return res.status(400).json({error:'URLを正しく指定してください'});
   try {return res.status(200).json(await resolve(raw));}
   catch(err){return res.status(502).json({error:`共有URLを解析できませんでした: ${err.message}`});}
 };
-module.exports._test={safeGoogleUrl,normalizedName,urlPlaceName,htmlPlaceName,isAddressLike,isOpaqueMapsToken,placeCoords,resolve};
+module.exports._test={safeGoogleUrl,normalizedName,urlPlaceName,htmlPlaceName,isAddressLike,isOpaqueMapsToken,placeCoords,resolve,htmlDestination};
