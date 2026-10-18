@@ -1,4 +1,4 @@
-/* ヨシトモの二人旅ログ — version 5
+/* ヨシトモの二人旅ログ — version 6
  * データはローカル保存。Firebase設定・共有コードを入力すると2人でリアルタイム同期。
  * Google Maps短縮URLの展開には同梱のVercel APIが必要です。
  */
@@ -31,6 +31,9 @@ let map;
 let visitedPlaces = [];
 let mapMarkers = [];
 let mapCircles = [];
+let mapCircleHints = [];
+const PHOTO_MARKER_MIN_ZOOM = 14;
+const MIN_AREA_DISPLAY_PX = 8;
 let currentRating = 5;
 let editingPlaceId = null;
 let selectedPrefManually = false;
@@ -124,6 +127,8 @@ function initMap() {
   L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
     maxZoom:18, attribution:'<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>'
   }).addTo(map);
+  // Keep circle coloring visible at all zooms; photo markers only at zoom >=14.
+  map.on('zoomend', updateZoomLayers);
   map.on('click', async e => {
     openAddModal();
     el('input-lat').value=e.latlng.lat.toFixed(6);
@@ -136,15 +141,54 @@ function saveLocalState() {
   localStorage.setItem(activeRoom ? roomCacheKey(activeRoom) : LOCAL_KEY, JSON.stringify(visitedPlaces));
   updateUI();
 }
+// A fixed minimum visual size helps tiny 500m circles remain recognizable
+// on a national map; the geographic L.circle is always preserved as-is.
+function geoRadiusPixels(p) {
+  const meters = Number(p.radius) * 1000;
+  const latitude = Math.min(85, Math.max(-85, Number(p.lat)));
+  const metersPerPixel = 40075016.686 * Math.cos(latitude * Math.PI / 180) / (256 * (2 ** map.getZoom()));
+  return meters / metersPerPixel;
+}
+function updateZoomLayers() {
+  const showPhotos = map.getZoom() >= PHOTO_MARKER_MIN_ZOOM;
+  mapMarkers.forEach(marker => {
+    if (showPhotos && !map.hasLayer(marker)) marker.addTo(map);
+    if (!showPhotos && map.hasLayer(marker)) map.removeLayer(marker);
+  });
+  mapCircleHints.forEach(({hint, place}) => {
+    // At far zooms a geographic 500m circle can be <1px. Display a colored
+    // area swatch (never a photo marker) until the actual circle is large enough.
+    const showHint = geoRadiusPixels(place) < MIN_AREA_DISPLAY_PX;
+    if (showHint && !map.hasLayer(hint)) hint.addTo(map);
+    if (!showHint && map.hasLayer(hint)) map.removeLayer(hint);
+  });
+}
 function renderMapElements() {
-  mapMarkers.forEach(m=>map.removeLayer(m)); mapCircles.forEach(c=>map.removeLayer(c));
-  mapMarkers=[]; mapCircles=[];
+  mapMarkers.forEach(m => map.removeLayer(m));
+  mapCircles.forEach(c => map.removeLayer(c));
+  mapCircleHints.forEach(({hint}) => map.removeLayer(hint));
+  mapMarkers = []; mapCircles = []; mapCircleHints = [];
   visitedPlaces.forEach(p => {
-    const circle = L.circle([p.lat,p.lng],{color:p.color,fillColor:p.color,fillOpacity:0.35,weight:1.5,radius:p.radius*1000}).addTo(map);
-    mapCircles.push(circle);
-    const marker = L.marker([p.lat,p.lng],{
-      icon: L.divIcon({className:'custom-pin',html:`<div style="background-color:${p.color};" class="w-8 h-8 rounded-full flex items-center justify-center text-white shadow-lg border-2 border-white"><i class="fa-solid fa-heart text-xs"></i></div>`,iconSize:[32,32],iconAnchor:[16,16]})
+    // Exact geographic coverage is always kept on the map.
+    const circle = L.circle([p.lat,p.lng],{
+      color:p.color, fillColor:p.color, fillOpacity:0.35,
+      weight:1.5, radius:p.radius*1000, interactive:false
     }).addTo(map);
+    mapCircles.push(circle);
+    // At nationwide zooms 500m often renders as a sub-pixel point.
+    const hint = L.circleMarker([p.lat,p.lng],{
+      radius:MIN_AREA_DISPLAY_PX, color:p.color, fillColor:p.color,
+      fillOpacity:0.42, weight:1, interactive:false
+    });
+    mapCircleHints.push({hint, place:p});
+    // Marker intentionally starts hidden and becomes visible at zoom 14+.
+    const marker = L.marker([p.lat,p.lng],{
+      icon:L.divIcon({
+        className:'memory-photo-marker',
+        html:'<img src="./spot-marker.jpg?v=6" alt="訪問地点" loading="lazy">',
+        iconSize:[44,44],iconAnchor:[22,22],popupAnchor:[0,-23]
+      })
+    });
     const mapsUrl=`https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lng}`;
     const stars='★'.repeat(p.rating)+'☆'.repeat(5-p.rating);
     marker.bindPopup(`<div class="p-1 max-w-xs">
@@ -159,6 +203,7 @@ function renderMapElements() {
       </div></div>`);
     mapMarkers.push(marker);
   });
+  updateZoomLayers();
 }
 function renderSpotsList() {
   const container=el('spots-list-container');
@@ -194,7 +239,7 @@ function renderPrefecturesTracker() {
   el('pref-progress-bar').style.width=`${ratio}%`;
   el('stats-summary').textContent=`制覇都道府県: ${visited.size}/47 | スポット: ${visitedPlaces.length}件`;
 }
-function focusOnMap(lat,lng) {map.flyTo([lat,lng],12,{duration:1.2}); closePanel();}
+function focusOnMap(lat,lng) {map.flyTo([lat,lng],PHOTO_MARKER_MIN_ZOOM,{duration:1.2}); closePanel();}
 function togglePanel() {el('sidebar').classList.toggle('translate-x-full');}
 function closePanel() {el('sidebar').classList.add('translate-x-full');}
 const RADIUS_CHOICES = [0.5,1,2];

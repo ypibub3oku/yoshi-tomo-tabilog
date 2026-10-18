@@ -9,10 +9,10 @@
     <meta name="apple-mobile-web-app-title" content="二人旅ログ">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <link rel="icon" href="./favicon.ico" sizes="any">
-    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
-    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./favicon.ico?v=6" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png?v=6">
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png?v=6">
+    <link rel="manifest" href="./manifest.webmanifest?v=6">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-auth-compat.js"></script>
@@ -62,6 +62,16 @@
         }
         /* Keep the header in the flex layout when mobile browser chrome changes height. */
         body { height: 100vh; height: 100dvh; min-height: 0; }
+
+        /* Photo markers appear only when closely zoomed. The colored areas
+           remain on the map even when the photo markers are hidden. */
+        .memory-photo-marker { background: transparent; border: none; }
+        .memory-photo-marker img {
+            display: block; width: 44px; height: 44px;
+            box-sizing: border-box; border: 3px solid #fff;
+            border-radius: 50%; object-fit: cover;
+            box-shadow: 0 2px 8px rgba(15,23,42,.38);
+        }
         .radius-scale-labels { display: flex; justify-content: space-between; }
         .custom-scrollbar::-webkit-scrollbar {
             width: 6px;
@@ -84,7 +94,7 @@
 
     <header id="app-header" class="bg-white/90 backdrop-blur-md border-b border-slate-200 z-20 px-4 py-3 flex items-center justify-between shadow-sm flex-shrink-0 transition-all duration-300">
         <div class="flex items-center space-x-2">
-            <img src="./icon-192.png" alt="ヨシトモの二人旅ログ アイコン" width="36" height="36" class="w-9 h-9 rounded-full object-cover border border-rose-100 shadow-md flex-shrink-0">
+            <img src="./icon-192.png?v=6" alt="東京タワーのアイコン" width="36" height="36" class="w-9 h-9 rounded-full object-cover border border-rose-100 shadow-md flex-shrink-0">
             <div>
                 <h1 class="font-bold text-slate-800 text-base leading-tight">ヨシトモの二人旅ログ</h1>
                 <p class="text-xs text-slate-500" id="stats-summary">行った都道府県: 0/47 | スポット: 0件</p>
@@ -396,7 +406,7 @@
                 </section>
                 <section>
                     <h3 class="font-bold text-rose-600 mb-1"><i class="fa-solid fa-circle-dot mr-1"></i>③ 地図の色と塗りつぶし</h3>
-                    <p>ピンと色の付いた円が登録した場所を表します。円の半径は、新しく登録する場合「500m（初期値）・1km・2km」から選べます。既存の3～5kmの記録は、編集して変更するまで元の大きさを維持します。</p>
+                    <p>色の付いた円が訪問エリアです。広い地図では写真マーカーを隠し、拡大率14以上で思い出の写真マーカーが現れます。広域では小さな円も見つけやすいよう最小サイズで描画しますが、拡大すると実際に設定した半径に戻ります。円の半径は「500m（初期値）・1km・2km」から選べます。既存の3～5kmの記録は変更するまで維持されます。</p>
                 </section>
                 <section>
                     <h3 class="font-bold text-rose-600 mb-1"><i class="fa-solid fa-list-check mr-1"></i>④ 記録を見る・編集する</h3>
@@ -416,6 +426,6 @@
             </div>
         </div>
     </div>
-    <script src="./app.js?v=5-zoomfix"></script>
+    <script src="./app.js?v=6-photo-zoom"></script>
 </body>
 </html>
