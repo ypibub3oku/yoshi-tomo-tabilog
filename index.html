@@ -28,9 +28,31 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             overflow: hidden;
         }
-        /* The map's Leaflet control/pane layers must not overlap the header. */
-        #app-header { position: relative; z-index: 1100; }
-        #btn-show-header { z-index: 1200; }
+        /* Header visibility is controlled ONLY by body.header-collapsed.
+           Map zoom, page layout and old hidden classes must never collapse it. */
+        #app-header { position: relative; z-index: 1100; display: flex !important; }
+        body.header-collapsed #app-header { display: none !important; }
+        #btn-show-header { z-index: 1200; display: none !important; }
+        body.header-collapsed #btn-show-header { display: flex !important; }
+        /* Standalone buttons replace Leaflet's href="#" zoom controls to avoid
+           unintended page scrolls, touch propagation and browser hash changes. */
+        #map-zoom-controls {
+            position: absolute; top: 12px; left: 12px; z-index: 15;
+            display: flex; flex-direction: column; overflow: hidden;
+            background: white; border: 1px solid #cbd5e1;
+            border-radius: 7px; box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
+            touch-action: manipulation;
+        }
+        .map-zoom-button {
+            display: flex; align-items: center; justify-content: center;
+            width: 38px; height: 38px; padding: 0;
+            border: 0; background: white; color: #334155;
+            font: 600 24px/1 system-ui, sans-serif;
+            cursor: pointer; touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .map-zoom-button + .map-zoom-button { border-top: 1px solid #cbd5e1; }
+        .map-zoom-button:hover, .map-zoom-button:focus-visible { background: #f1f5f9; }
         #map {
             position: relative;
             width: 100%;
@@ -56,7 +78,7 @@
 <body class="bg-slate-900 text-slate-800 flex flex-col h-screen">
 
     <!-- Header Toggle Floating Button (Shown when header is hidden) -->
-    <button id="btn-show-header" class="hidden absolute top-3 right-3 z-30 bg-white/90 backdrop-blur-md hover:bg-white text-slate-700 p-2.5 rounded-full shadow-lg border border-slate-200 transition active:scale-95">
+    <button id="btn-show-header" type="button" aria-label="ヘッダーを表示" class="absolute top-3 right-3 z-30 bg-white/90 backdrop-blur-md hover:bg-white text-slate-700 p-2.5 rounded-full shadow-lg border border-slate-200 transition active:scale-95">
         <i class="fa-solid fa-chevron-down text-sm"></i>
     </button>
 
@@ -77,7 +99,7 @@
             <button id="btn-toggle-panel" class="bg-slate-100 hover:bg-slate-200 text-slate-700 p-2 rounded-xl transition text-sm">
                 <i class="fa-solid fa-bars"></i>
             </button>
-            <button id="btn-hide-header" class="bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 p-2 rounded-xl transition text-sm" title="ヘッダーを隠す">
+            <button id="btn-hide-header" type="button" aria-label="ヘッダーを非表示" class="bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 p-2 rounded-xl transition text-sm" title="ヘッダーを隠す">
                 <i class="fa-solid fa-chevron-up"></i>
             </button>
         </div>
@@ -87,6 +109,11 @@
         
         <!-- Leaflet Map Container -->
         <div id="map"></div>
+        <!-- Zoom controls outside Leaflet, so they never affect the header -->
+        <div id="map-zoom-controls" role="group" aria-label="地図の拡大・縮小">
+            <button id="btn-zoom-in" type="button" class="map-zoom-button" aria-label="地図を拡大" title="拡大">+</button>
+            <button id="btn-zoom-out" type="button" class="map-zoom-button" aria-label="地図を縮小" title="縮小">−</button>
+        </div>
 
         <!-- Float Status Badge -->
         <div class="absolute bottom-6 left-4 z-10 bg-white/90 backdrop-blur-md px-3 py-2 rounded-2xl shadow-lg border border-slate-200 flex items-center space-x-2 text-xs">
@@ -389,6 +416,6 @@
             </div>
         </div>
     </div>
-    <script src="./app.js?v=4"></script>
+    <script src="./app.js?v=5-zoomfix"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-/* ヨシトモの二人旅ログ — version 3
+/* ヨシトモの二人旅ログ — version 5
  * データはローカル保存。Firebase設定・共有コードを入力すると2人でリアルタイム同期。
  * Google Maps短縮URLの展開には同梱のVercel APIが必要です。
  */
@@ -121,10 +121,6 @@ function populatePrefectureSelect() {
 }
 function initMap() {
   map = L.map('map',{zoomControl:false}).setView([36.575,137.984],6);
-  const zoomControl = L.control.zoom({position:'topleft'}).addTo(map);
-  // Prevent Leaflet controls from bubbling clicks to the map and affecting page UI.
-  L.DomEvent.disableClickPropagation(zoomControl.getContainer());
-  L.DomEvent.disableScrollPropagation(zoomControl.getContainer());
   L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
     maxZoom:18, attribution:'<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>'
   }).addTo(map);
@@ -812,9 +808,19 @@ async function importJsonFile(file) {
   notify(`${changed}件を追加しました（既存の記録は維持）`);
 }
 function setupEventListeners() {
-  // Only these header controls may hide/show the header, never map zoom events.
-  el('btn-hide-header').addEventListener('click',e=>{e.stopPropagation();el('app-header').classList.add('hidden');el('btn-show-header').classList.remove('hidden');setTimeout(()=>map.invalidateSize(),200);});
-  el('btn-show-header').addEventListener('click',e=>{e.stopPropagation();el('app-header').classList.remove('hidden');el('btn-show-header').classList.add('hidden');setTimeout(()=>map.invalidateSize(),200);});
+  // Use an explicit header state, never the generic Tailwind .hidden class.
+  // The top-left +/- controls cannot change this state even on touch devices.
+  const setHeaderCollapsed = collapsed => {
+    document.body.classList.toggle('header-collapsed',collapsed);
+    // After layout change, let Leaflet adjust to the newly available map space.
+    requestAnimationFrame(()=>map.invalidateSize());
+    setTimeout(()=>map.invalidateSize(),200);
+  };
+  el('btn-hide-header').addEventListener('click',e=>{e.preventDefault();e.stopPropagation();setHeaderCollapsed(true);});
+  el('btn-show-header').addEventListener('click',e=>{e.preventDefault();e.stopPropagation();setHeaderCollapsed(false);});
+  // Native buttons, not Leaflet's anchor controls: no href="#" or page scroll.
+  el('btn-zoom-in').addEventListener('click',e=>{e.preventDefault();e.stopPropagation();map.zoomIn();});
+  el('btn-zoom-out').addEventListener('click',e=>{e.preventDefault();e.stopPropagation();map.zoomOut();});
   const showHelp=()=>el('modal-help').classList.remove('hidden');
   const closeHelp=()=>el('modal-help').classList.add('hidden');
   el('btn-open-help').addEventListener('click',showHelp);
