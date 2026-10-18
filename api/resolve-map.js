@@ -1,5 +1,5 @@
 /**
- * Google Maps URL metadata helper for Vercel.
+ * Google Maps short URL resolver for Vercel (redirect-first, no page fetch needed if location has a place name).
  * - Expands maps.app.goo.gl / goo.gl/maps redirects.
  * - Attempts to retrieve a genuine place title from the Google Maps page.
  * - Never guesses a place name from a street address.
@@ -102,20 +102,75 @@ function unwrapLink(u) {
   if (linked) {try {return safeGoogleUrl(linked)} catch {}}
   return null;
 }
+// Extract the coordinates of a selected Google Maps place, not the map viewport (@...)
+// Google place URL example: .../maps/place/東京タワー/@35.6585848,139.742858,17z/data=...!3d35.6585805!4d139.7454329
+function placeCoords(url) {
+  const pair=String(url).match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
+  if (pair) return {lat:Number(pair[1]),lng:Number(pair[2])};
+  const reversed=String(url).match(/!2d(-?\d+(?:\.\d+)?)!3d(-?\d+(?:\.\d+)?)/);
+  if (reversed) return {lat:Number(reversed[2]),lng:Number(reversed[1])};
+  try {
+    const u=new URL(url);
+    for (const param of ['query','q','ll']) {
+      const value=u.searchParams.get(param);
+      const m=value?.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+      if (m) return {lat:Number(m[1]),lng:Number(m[2])};
+    }
+  }catch {}
+  return null;
+}
+function infoFromUrl(u, source) {
+  const name=urlPlaceName(u.toString());
+  return {url:u.toString(),name,coords:placeCoords(u.toString()),source};
+}
 async function resolve(raw) {
-  let u=safeGoogleUrl(raw); let html='';
-  // Some short links first redirect to an app-link wrapper with a nested /maps URL.
+  let u=safeGoogleUrl(raw);
+  // If the URL already identifies a place, never fetch Google again. Google often
+  // returns a consent/unsupported page when a backend fetches the destination.
+  const initial=infoFromUrl(u,'url');
+  if (initial.name && initial.coords) return initial;
+  let html='';
   for(let n=0;n<8;n++) {
     const nested=unwrapLink(u);
-    if(nested) {u=nested;continue;}
-    const response=await fetch(u.toString(),{
-      method:'GET',redirect:'manual',signal:AbortSignal.timeout(7500),
-      headers:{'user-agent':'Mozilla/5.0 (compatible; OdekakeMap/7.0)','accept':'text/html','accept-language':'ja-JP,ja;q=0.9'}
-    });
+    if (nested) {
+      u=nested;
+      const identified=infoFromUrl(u,'wrapped-url');
+      if(identified.name && identified.coords) return identified;
+      continue;
+    }
+    let response;
+    try {
+      response=await fetch(u.toString(),{
+        method:'GET',redirect:'manual',signal:AbortSignal.timeout(8000),
+        headers:{
+          'user-agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'accept-language':'ja-JP,ja;q=0.9,en;q=0.6'
+        }
+      });
+    }catch(error) {
+      // If we have already found a genuine place URL, prefer the identified
+      // name over a later failure to fetch its HTML.
+      const partial=infoFromUrl(u,'redirect-url');
+      if(partial.name) return partial;
+      throw error;
+    }
     if(response.status>=300 && response.status<400) {
       const redirect=response.headers.get('location');
-      if(!redirect)break;
-      u=safeGoogleUrl(new URL(redirect,u).toString());
+      if(!redirect) break;
+      const next=new URL(redirect,u);
+      // Some Google pages redirect to a consent screen or other non-Maps host.
+      // Retain the last valid Google Maps destination if it already has the title.
+      try{u=safeGoogleUrl(next.toString());}
+      catch(error){
+        const partial=infoFromUrl(u,'redirect-url');
+        if(partial.name)return partial;
+        throw error;
+      }
+      // CRITICAL: Stop on the first URL containing a valid place title and
+      // location. No second request to google.co.jp or consent.google.com.
+      const identified=infoFromUrl(u,'redirect-url');
+      if(identified.name && identified.coords) return identified;
       continue;
     }
     if(response.ok) html=await firstHtml(response);
@@ -123,15 +178,20 @@ async function resolve(raw) {
   }
   if(['maps.app.goo.gl','goo.gl'].includes(u.hostname.toLowerCase()))
     throw new Error('Google側から転送先URLを取得できませんでした');
-  const name=urlPlaceName(u.toString()) || htmlPlaceName(html);
-  return {url:u.toString(),name};
+  const result=infoFromUrl(u,'final-url');
+  if(!result.name && html) {
+    result.name=htmlPlaceName(html);
+    if(result.name) result.source='page-title';
+  }
+  return result;
 }
 module.exports=async function handler(req,res) {
   res.setHeader('Cache-Control','no-store');
+  res.setHeader('X-Odekake-Resolver','v8');
   if(req.method!=='GET')return res.status(405).json({error:'GETだけに対応しています'});
   const raw=req.query?.url;
   if(typeof raw!=='string'||raw.length>3500)return res.status(400).json({error:'URLを正しく指定してください'});
   try {return res.status(200).json(await resolve(raw));}
   catch(err){return res.status(502).json({error:`共有URLを解析できませんでした: ${err.message}`});}
 };
-module.exports._test={safeGoogleUrl,normalizedName,urlPlaceName,htmlPlaceName,isAddressLike,resolve};
+module.exports._test={safeGoogleUrl,normalizedName,urlPlaceName,htmlPlaceName,isAddressLike,placeCoords,resolve};
