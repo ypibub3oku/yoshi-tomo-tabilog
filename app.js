@@ -1,4 +1,4 @@
-/* ヨシトモの二人旅ログ — version 6
+/* ヨシトモの二人旅ログ — version 7
  * データはローカル保存。Firebase設定・共有コードを入力すると2人でリアルタイム同期。
  * Google Maps短縮URLの展開には同梱のVercel APIが必要です。
  */
@@ -587,59 +587,130 @@ function parseGoogleMapUrl(url) {
   }
   return null;
 }
+function looksLikePostalAddress(value) {
+  const text=String(value||'').trim();
+  return !text || /^(?:〒|郵便番号|\d{3}-\d{4}\b|東京都|大阪府|京都府|北海道|.{2,4}県|日本、|Japan,)/i.test(text) ||
+    /(?:\d+[‐ー−-]\d+(?:[‐ー−-]\d+)?|丁目|番地|\d+番\d*号)/.test(text) ||
+    /^(?:Google Maps|Google マップ|地図)$/i.test(text);
+}
+function normalizeSharedPlaceName(value) {
+  let name=String(value??'').replace(/[\u0000-\u001f\u007f]/g,' ').trim();
+  name=name.replace(/\s*[-–—|]\s*Google\s*(?:Maps|マップ)\s*$/i,'').trim();
+  // Google sometimes appends an address to a business name.
+  name=name.split('〒')[0].replace(/[,、]\s*(?=(?:東京都|大阪府|京都府|北海道|.{2,4}県))[^,、]*$/,'').trim();
+  return name.length<=150 && !looksLikePostalAddress(name) ? name : '';
+}
 function parseGooglePlaceName(url) {
-  const u=new URL(url);
-  const match=u.pathname.match(/\/place\/([^/@?#]+)/);
-  if(match) {try { return decodeURIComponent(match[1].replace(/\+/g,' ')); } catch {return match[1];}}
+  let u;
+  try {u=new URL(url);}catch{return '';}
+  const match=u.pathname.match(/\/(?:maps\/)?(?:place|search)\/([^/@?#]+)/i);
+  if(match) {
+    let raw=match[1];try{raw=decodeURIComponent(raw.replace(/\+/g,' '));}catch{}
+    const name=normalizeSharedPlaceName(raw);
+    if(name)return name;
+  }
   for(const key of ['query','q']) {
-    const v=u.searchParams.get(key);
-    if(v && !/^[-\d.,\s]+$/.test(v)) return v;
+    const value=u.searchParams.get(key);
+    if(value && !/^[-\d.,\s]+$/.test(value)) {
+      const name=normalizeSharedPlaceName(value);
+      if(name)return name;
+    }
   }
   return '';
+}
+function sharedUrlAndTitle(text) {
+  // Google Mapsの共有メニューからURLと施設名が一緒にコピーされた場合にも対応。
+  const raw=String(text||'').trim();
+  const match=raw.match(/https:\/\/[^\s<>"']+/i);
+  if(!match)return {url:raw,sharedName:''};
+  const url=match[0].replace(/[\])、。]+$/g,'');
+  const rest=raw.replace(match[0],'').replace(/^(?:場所|名称|住所)[:：]\s*/,'').trim();
+  const sharedName=normalizeSharedPlaceName(rest.split(/\n|\r/)[0]);
+  return {url,sharedName};
+}
+async function reverseSpotName(lat,lng) {
+  // 住所から施設名を推測しない。OSMに名称付きPOIがある場合だけ補完する。
+  const params=new URLSearchParams({format:'jsonv2',lat:String(lat),lon:String(lng),zoom:'18',namedetails:'1',addressdetails:'1','accept-language':'ja'});
+  const result=await queueGeo(`https://nominatim.openstreetmap.org/reverse?${params}`);
+  const category=String(result.category||result.class||'').toLowerCase();
+  const poiCategory=['tourism','historic','amenity','leisure','shop','office','craft','natural','man_made','railway','aeroway'];
+  if(!poiCategory.includes(category))return '';
+  const nearestLat=Number(result.lat),nearestLng=Number(result.lon);
+  if(!validCoord(nearestLat,nearestLng))return '';
+  // Very conservative: the reverse geocoder might return a neighboring venue.
+  const dx=(lng-nearestLng)*111320*Math.cos(lat*Math.PI/180),dy=(lat-nearestLat)*111320;
+  if(Math.hypot(dx,dy)>90)return '';
+  const candidates=[result.namedetails?.['name:ja'],result.namedetails?.name,result.name];
+  return candidates.map(normalizeSharedPlaceName).find(Boolean)||'';
 }
 function isGoogleMapHost(host) {
   return /^(?:(?:www|maps)\.)?google\.(?:com|co\.jp|co\.uk|com\.au)$/.test(host) || host==='maps.app.goo.gl' || host==='goo.gl';
 }
+async function getGoogleMapInfo(url) {
+  const response=await fetch(`/api/resolve-map?url=${encodeURIComponent(url)}`);
+  if(!response.ok) {
+    let detail='';try{detail=(await response.json()).error||'';}catch{}
+    throw new Error(detail||'Googleマップのリンクを解析できませんでした');
+  }
+  const data=await response.json();
+  if(!data || typeof data.url!=='string')throw new Error('共有URLの解析結果が空でした');
+  return {url:data.url,name:normalizeSharedPlaceName(data.name)};
+}
 async function importMapUrl() {
-  const status=el('gmap-status'); status.classList.remove('hidden');
-  let input=el('input-gmap-url').value.trim();
-  if(!input) {status.textContent='Googleマップの共有URLを貼り付けてください'; return;}
-  status.textContent='URLから位置を確認しています…';
+  const status=el('gmap-status');status.classList.remove('hidden');
+  const pasted=sharedUrlAndTitle(el('input-gmap-url').value);
+  let input=pasted.url;
+  if(!input) {status.textContent='Googleマップの共有URLを貼り付けてください';return;}
+  status.textContent='施設名と位置情報を調べています…';
   try {
     const u=new URL(input);
-    if(u.protocol!=='https:' || !isGoogleMapHost(u.hostname.toLowerCase())) throw new Error('GoogleマップのHTTPS URLを入力してください');
-    if(/^(maps\.app\.goo\.gl|goo\.gl)$/.test(u.hostname.toLowerCase())) {
-      if(location.protocol==='file:') throw new Error('短縮URLを読み込むにはVercelへの公開が必要です（README参照）');
-      // リダイレクトをブラウザから直接取得するとCORS制限があるため、Vercel API経由で展開。
-      const r=await fetch(`/api/resolve-map?url=${encodeURIComponent(input)}`);
-      if(!r.ok) {
-        let detail=''; try{detail=(await r.json()).error||'';}catch{}
-        throw new Error(detail||'短縮URLを展開できませんでした（Vercelへの配置が必要です）');
-      }
-      const payload=await r.json();
-      if(!payload.url) throw new Error('短縮URLの展開結果が空でした');
-      input=payload.url;
+    if(u.protocol!=='https:' || !isGoogleMapHost(u.hostname.toLowerCase()))throw new Error('GoogleマップのHTTPS URLを入力してください');
+    const isShort=/^(maps\.app\.goo\.gl|goo\.gl)$/.test(u.hostname.toLowerCase());
+    let serverName='';
+    if(isShort) {
+      if(location.protocol==='file:')throw new Error('短縮URLの読み込みにはVercelへの公開が必要です');
+      const result=await getGoogleMapInfo(input);
+      input=result.url;serverName=result.name;
     }
     const route=parseGoogleRouteUrl(input);
     if(route) {
-      if(!route.items.length) throw new Error('このルートURLから地点が見つかりませんでした。「出発地・目的地・経由地」が載った共有リンクをコピーしてください。');
+      if(!route.items.length)throw new Error('このルートURLから地点が見つかりませんでした。「出発地・目的地・経由地」が載った共有リンクをコピーしてください。');
       status.textContent=`ルート内の${route.items.length}地点を抽出しました。登録する場所を選択してください。`;
-      await openRouteModal(route);
-      return;
+      await openRouteModal(route);return;
     }
-    const name=parseGooglePlaceName(input);
-    if(name) el('input-name').value=name;
+    let name=pasted.sharedName||parseGooglePlaceName(input)||serverName;
+    // Some long Maps URLs contain only coordinates, an address, or a Google place ID.
+    if(!name && !isShort && location.protocol!=='file:') {
+      try {
+        const result=await getGoogleMapInfo(input);
+        input=result.url;
+        name=result.name||parseGooglePlaceName(input);
+      }catch { /* Continue with coordinates / location lookup below. */ }
+    }
     const coords=parseGoogleMapUrl(input);
     if(coords && validCoord(coords.lat,coords.lng)) {
+      if(!name) {
+        try {name=await reverseSpotName(coords.lat,coords.lng);}catch{}
+      }
+      el('input-name').value=name||'';
       await applyLocation(coords.lat,coords.lng);
-      status.textContent='スポットの位置を取得しました'; return;
+      status.textContent=name
+        ? `施設名「${name}」と位置を取得しました。確認して登録してください。`
+        : '位置は取得しましたが施設名は判定できませんでした。「場所の名前」に施設名を入力してください。';
+      return;
     }
     if(name) {
-      const p=await searchLocation(name);
-      await applyLocation(p.lat,p.lng,p.pref);
-      status.textContent='スポット名から位置を取得しました'; return;
+      el('input-name').value=name;
+      try {
+        const found=await searchLocation(name);
+        await applyLocation(found.lat,found.lng,found.pref);
+        status.textContent=`施設名「${name}」から位置を検索しました。地図で確認して登録してください。`;
+      }catch {
+        status.textContent=`施設名「${name}」を読み込みました。位置を取得できないため「位置を取得」を押すか、地図上で指定してください。`;
+      }
+      return;
     }
-    throw new Error('URLに座標がありません。施設名を入力して「位置を取得」を押してください');
+    throw new Error('URLから施設名・位置を取得できませんでした。場所の名前を入力して「位置を取得」を押してください。');
   } catch(error) {status.textContent=error.message||'URLを読み込めませんでした';}
 }
 
